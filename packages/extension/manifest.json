@@ -1,0 +1,57 @@
+{
+  "manifest_version": 3,
+  "name": "飞书文章同步助手",
+  "version": "1.0.0",
+  "description": "从飞书文档提取文章内容并同步到CSDN和知乎",
+  "icons": {
+    "16": "public/assets/icon-16.png",
+    "48": "public/assets/icon-48.png",
+    "128": "public/assets/icon-128.png"
+  },
+  "action": {
+    "default_popup": "src/popup/index.html",
+    "default_icon": {
+      "16": "public/assets/icon-16.png",
+      "48": "public/assets/icon-48.png",
+      "128": "public/assets/icon-128.png"
+    }
+  },
+  "permissions": [
+    "storage",
+    "cookies",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://*.feishu.cn/*",
+    "https://*.csdn.net/*",
+    "https://*.zhihu.com/*",
+    "https://*.weibo.cn/*",
+    "https://*.huaweicloud.com/*",
+    "https://*.zhimg.com/*",
+    "https://zhihu-pics-upload.zhimg.com/*"
+  ],
+  "background": {
+    "service_worker": "src/background/index.ts",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*.feishu.cn/*"],
+      "js": ["src/content/api.ts"],
+      "run_at": "document_start",
+      "all_frames": false
+    },
+    {
+      "matches": ["https://*.feishu.cn/wiki/*", "https://*.feishu.cn/docs/*", "https://*.feishu.cn/docx/*"],
+      "js": ["src/content/feishu.ts"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["src/popup/lib/*"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

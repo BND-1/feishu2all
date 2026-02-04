@@ -1,0 +1,22 @@
+{
+  "name": "feishu2all",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Feishu Article Sync Extension - Sync Feishu articles to CSDN and Zhihu",
+  "scripts": {
+    "dev": "pnpm --filter extension dev",
+    "build": "pnpm --filter extension build",
+    "preview": "pnpm --filter extension preview"
+  },
+  "keywords": ["feishu", "csdn", "zhihu", "article-sync", "chrome-extension"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=8.0.0"
+  }
+}
