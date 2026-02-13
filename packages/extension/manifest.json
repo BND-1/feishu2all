@@ -19,7 +19,8 @@
   "permissions": [
     "storage",
     "cookies",
-    "tabs"
+    "tabs",
+    "declarativeNetRequest"
   ],
   "host_permissions": [
     "https://*.feishu.cn/*",

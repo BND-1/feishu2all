@@ -1,47 +1,23 @@
 /**
  * Global API Content Script
- * Injects article extraction API into the page context
+ * Provides article extraction functionality without violating CSP
  * Runs at document_start on all Feishu pages
  */
 
-// Inject the extraction API into the page context
-function injectExtractionAPI() {
-  const script = document.createElement('script')
-  script.textContent = `
-    (function() {
-      // Create a global API for article extraction
-      window.__FEISHU2ALL__ = {
-        version: '1.0.0',
-        ready: false,
+// Instead of injecting into page context (which violates CSP),
+// we create a content script-level API that can be accessed via custom events
+function setupContentScriptAPI() {
+  // Listen for custom events from the page (if needed in the future)
+  document.addEventListener('__feishu2all_extract_article', () => {
+    console.log('[Feishu2All] Extract article event received')
+    chrome.runtime.sendMessage({ type: 'EXTRACT_ARTICLE_FROM_PAGE' })
+  })
 
-        // Extract article from current page
-        extractArticle: function() {
-          console.log('[Feishu2All] extractArticle called from page')
-          // Send message to content script
-          chrome.runtime.sendMessage({ type: 'EXTRACT_ARTICLE_FROM_PAGE' })
-        },
-
-        // Check if page is supported
-        isSupported: function() {
-          return /https?:\\/\\/[^.]+\\.feishu\\.cn\\/(wiki|docs|docx)/.test(window.location.href)
-        },
-
-        // Mark as ready
-        markReady: function() {
-          this.ready = true
-          console.log('[Feishu2All] API ready')
-        }
-      }
-
-      console.log('[Feishu2All] API injected into page')
-    })()
-  `
-  ;(document.head || document.documentElement).appendChild(script)
-  script.remove()
+  console.log('[Feishu2All] Content script API ready')
 }
 
-// Inject immediately at document_start
-injectExtractionAPI()
+// Setup the API at document_start
+setupContentScriptAPI()
 
 // Log when script is loaded
 console.log('[Feishu2All API] Content script loaded')

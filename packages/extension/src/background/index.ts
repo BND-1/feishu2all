@@ -7,6 +7,7 @@ import type { Article, SyncResult, MessageTypes } from '../types'
 import { CSDNAdapter } from '../popup/adapters/platforms/csdn'
 import { ZhihuAdapter } from '../popup/adapters/platforms/zhihu'
 import { createLogger } from '../popup/lib/logger'
+import runtime from '../popup/runtime/extension'
 
 const logger = createLogger('Background')
 
@@ -17,8 +18,8 @@ const adapters: Map<string, InstanceType<typeof CSDNAdapter> | InstanceType<type
  * Initialize platform adapters
  */
 function initializeAdapters() {
-  adapters.set('csdn', new CSDNAdapter())
-  adapters.set('zhihu', new ZhihuAdapter())
+  adapters.set('csdn', new CSDNAdapter(runtime))
+  adapters.set('zhihu', new ZhihuAdapter(runtime))
   logger.info('Platform adapters initialized', { count: adapters.size })
 }
 

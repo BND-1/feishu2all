@@ -15,6 +15,8 @@ export interface Article {
   images?: string[]
   tags?: string[]
   categories?: string[]
+  /** Pre-downloaded image data URIs keyed by original URL (for authenticated CDN images) */
+  imageDataMap?: Record<string, string>
 }
 
 export interface SyncResult {

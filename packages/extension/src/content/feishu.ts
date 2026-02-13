@@ -4,6 +4,9 @@
  * This is a content script that runs on Feishu pages
  */
 
+import TurndownService from 'turndown'
+import { processHtml, feishuCleanPreset } from '../popup/lib/html-processor'
+
 // Types for internal use
 interface Article {
   title: string
@@ -16,6 +19,7 @@ interface Article {
     platform: string
   }
   images?: string[]
+  imageDataMap?: Record<string, string>
 }
 
 // Feishu URL patterns
@@ -47,10 +51,20 @@ function getFeishuDocType(): 'wiki' | 'docs' | 'docx' | null {
 }
 
 /**
- * Feishu-specific selectors - Updated for current Feishu DOM structure
+ * Feishu-specific selectors
+ *
+ * IMPORTANT: Feishu docx uses a "block per paragraph" DOM model — each paragraph,
+ * image, code block, etc. is a separate `[contenteditable="true"]` div. There is
+ * NO single contenteditable that wraps the entire document. So we must NOT match
+ * individual contenteditable elements; instead we need their **common parent
+ * container** that holds ALL content blocks.
+ *
+ * Strategy:
+ *   1. Try known container selectors that wrap all content blocks.
+ *   2. If those fail, find a contenteditable leaf and walk UP to find the
+ *      ancestor that contains multiple contenteditable siblings (= the container).
  */
 const FEISHU_SELECTORS = {
-  // Title selectors
   title: [
     '[class*="title-input"]',
     '[class*="doc-title"]',
@@ -63,52 +77,28 @@ const FEISHU_SELECTORS = {
     'h1',
   ],
 
-  // Main content area - be more specific to avoid getting the entire page
-  mainContent: [
+  // Container selectors — elements that wrap ALL content blocks.
+  // These are tried first via querySelector (first match wins).
+  container: [
+    '[data-content-editable-root="true"]',
+    '#docx-container',
+    '[class*="render-unit-wrapper"]',
+    '[class*="doc-content-container"]',
     '[class*="doc-content"]',
     '[class*="wiki-content"]',
     '[class*="docx-content"]',
-    '[class*="rich-text"]',
-    '[class*="slate-editor"]',
+    '[class*="lark-editor"]',
     '[class*="editor-container"]',
     '[class*="EditorContainer"]',
-    '[class*="lark-editor"]',
-    '[data-content-editable-root]',
-    '[contenteditable="true"]',
     '.wiki-content',
     '.doc-content',
   ],
 
-  // Article wrapper - more comprehensive selectors
-  articleWrapper: [
-    '#mainBox',
-    '#opcr',
-    '[class*="render-unit-wrapper"]',
-    '[class*="doc-content-container"]',
-    '[class*="wiki-content-container"]',
-    '[class*="docx-editor"]',
-    '[class*="doc-reader"]',
-    '[class*="wiki-reader"]',
-    '[class*="lark-doc"]',
-    '[class*="doc-container"]',
-    '[class*="wiki-container"]',
-    '[class*="wiki-popover-container"]',
-    '[class*="article-container"]',
-    '[class*="page-content"]',
-    '[class*="main-content"]',
-    '[id*="magicEditor"]',
-    '[id*="render"]',
-    '#ARTICLE',
-    'article',
-    'main',
-    '[role="main"]',
-    '#main',
-  ],
-
-  // Cover image selectors
-  cover: [
-    'meta[property="og:image"]',
-    'meta[name="og:image"]',
+  // Leaf selectors — individual content blocks. Used to find ONE block,
+  // then walk up to the container that holds all siblings.
+  leaf: [
+    '[data-content-editable-root="true"]',
+    '[contenteditable="true"]',
   ],
 }
 
@@ -143,90 +133,37 @@ function getTextContent(selectors: string[], root: Element | Document = document
 }
 
 /**
- * Convert HTML to Markdown (simplified version)
+ * Convert HTML to Markdown using Turndown (runs in content script with DOM access)
  */
 function htmlToMarkdown(html: string): string {
-  let markdown = html
+  const turndown = new TurndownService({
+    headingStyle: 'atx',
+    codeBlockStyle: 'fenced',
+    bulletListMarker: '-',
+  })
 
-  // Headers
-  markdown = markdown.replace(/<h1[^>]*>(.*?)<\/h1>/gi, '# $1\n\n')
-  markdown = markdown.replace(/<h2[^>]*>(.*?)<\/h2>/gi, '## $1\n\n')
-  markdown = markdown.replace(/<h3[^>]*>(.*?)<\/h3>/gi, '### $1\n\n')
-  markdown = markdown.replace(/<h4[^>]*>(.*?)<\/h4>/gi, '#### $1\n\n')
+  turndown.addRule('codeBlock', {
+    filter: (node: HTMLElement) =>
+      node.nodeName === 'PRE' &&
+      (node.firstChild?.nodeName === 'CODE' || node.classList.contains('code')),
+    replacement: (content: string, node: HTMLElement) => {
+      const codeNode = node.firstChild as HTMLElement
+      const lang =
+        codeNode?.className?.match(/language-(\w+)/)?.[1] ||
+        node.getAttribute('data-language') ||
+        ''
+      return '\n\n```' + lang + '\n' + content + '\n```\n\n'
+    },
+  })
 
-  // Bold
-  markdown = markdown.replace(/<strong[^>]*>(.*?)<\/strong>/gi, '**$1**')
-  markdown = markdown.replace(/<b[^>]*>(.*?)<\/b>/gi, '**$1**')
-
-  // Italic
-  markdown = markdown.replace(/<em[^>]*>(.*?)<\/em>/gi, '_$1_')
-  markdown = markdown.replace(/<i[^>]*>(.*?)<\/i>/gi, '_$1_')
-
-  // Code blocks
-  markdown = markdown.replace(/<pre[^>]*><code[^>]*>([\s\S]*?)<\/code><\/pre>/gi, '```\n$1\n```\n\n')
-  markdown = markdown.replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, '```\n$1\n```\n\n')
-
-  // Inline code
-  markdown = markdown.replace(/<code[^>]*>(.*?)<\/code>/gi, '`$1`')
-
-  // Links
-  markdown = markdown.replace(/<a[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>/gi, '[$2]($1)')
-
-  // Images
-  markdown = markdown.replace(/<img[^>]*src="([^"]*)"[^>]*(?:alt="([^"]*)")?[^>]*>/gi, '![$2]($1)')
-
-  // Line breaks and paragraphs
-  markdown = markdown.replace(/<br\s*\/?>/gi, '\n')
-  markdown = markdown.replace(/<\/p>\s*<p>/gi, '\n\n')
-  markdown = markdown.replace(/<p[^>]*>(.*?)<\/p>/gi, '$1\n\n')
-
-  // Lists
-  markdown = markdown.replace(/<li[^>]*>(.*?)<\/li>/gi, '- $1')
-  markdown = markdown.replace(/<\/?ul[^>]*>/gi, '')
-  markdown = markdown.replace(/<\/?ol[^>]*>/gi, '')
-
-  // Blockquotes
-  markdown = markdown.replace(/<blockquote[^>]*>(.*?)<\/blockquote>/gi, '> $1\n\n')
-
-  // Tables (basic support)
-  markdown = markdown.replace(/<table[^>]*>/gi, '\n')
-  markdown = markdown.replace(/<\/table[^>]*>/gi, '\n')
-  markdown = markdown.replace(/<tr[^>]*>/gi, '|')
-  markdown = markdown.replace(/<\/tr>/gi, '|\n')
-  markdown = markdown.replace(/<t[dh][^>]*>/gi, '|')
-  markdown = markdown.replace(/<\/t[dh]>/gi, '')
-
-  // Clean up extra whitespace
-  markdown = markdown.replace(/\n{3,}/g, '\n\n')
-
-  // Remove remaining HTML tags
-  markdown = markdown.replace(/<[^>]+>/g, '')
-
-  // Decode HTML entities
-  markdown = markdown.replace(/&nbsp;/g, ' ')
-  markdown = markdown.replace(/&lt;/g, '<')
-  markdown = markdown.replace(/&gt;/g, '>')
-  markdown = markdown.replace(/&amp;/g, '&')
-  markdown = markdown.replace(/&quot;/g, '"')
-  markdown = markdown.replace(/&#39;/g, "'")
-
-  return markdown.trim()
+  return turndown.turndown(html).trim()
 }
 
 /**
- * Clean HTML by removing unwanted elements
+ * Clean HTML by removing unwanted elements — delegates to shared processor
  */
 function cleanHtml(html: string): string {
-  let cleaned = html
-
-  // Remove script and style tags
-  cleaned = cleaned.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-  cleaned = cleaned.replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
-
-  // Remove HTML comments
-  cleaned = cleaned.replace(/<!--[\s\S]*?-->/g, '')
-
-  return cleaned.trim()
+  return processHtml(html, feishuCleanPreset)
 }
 
 /**
@@ -296,9 +233,26 @@ function extractImagesFromHtml(html: string): string[] {
   const imgElements = tempDiv.querySelectorAll('img')
 
   imgElements.forEach((img) => {
-    const src = img.getAttribute('src')
-    if (src && (src.startsWith('http') || src.startsWith('data:image'))) {
-      images.push(src)
+    // Try multiple sources for the image
+    const src = img.getAttribute('src') ||
+                img.getAttribute('data-src') ||
+                img.getAttribute('data-original')
+
+    if (src) {
+      // Handle relative URLs
+      let fullUrl = src
+      if (!src.startsWith('http') && !src.startsWith('data:image')) {
+        // Convert relative URL to absolute
+        try {
+          fullUrl = new URL(src, window.location.href).href
+        } catch {
+          console.warn('[FeishuExtractor] Invalid image URL:', src)
+          return
+        }
+      }
+
+      images.push(fullUrl)
+      console.log('[FeishuExtractor] Found image:', fullUrl)
     }
   })
 
@@ -308,7 +262,7 @@ function extractImagesFromHtml(html: string): string[] {
 /**
  * Extract article from Feishu page
  */
-function extractFeishuArticle(): Article | null {
+async function extractFeishuArticle(): Promise<Article | null> {
   try {
     console.log('[FeishuExtractor] Starting extraction...')
 
@@ -342,69 +296,116 @@ function extractFeishuArticle(): Article | null {
 
     console.log('[FeishuExtractor] Title:', title)
 
-    // Debug: Log available DOM elements
-    console.log('[FeishuExtractor] Checking for article wrapper...')
-    console.log('[FeishuExtractor] Document ready state:', document.readyState)
-    console.log('[FeishuExtractor] Body exists:', !!document.body)
+    // --- Find the content container ---
+    // Feishu uses a "block per paragraph" DOM: each paragraph/image/code-block is
+    // a separate element (often contenteditable). We need to find the PARENT that
+    // wraps all these blocks, not an individual block.
+    let contentElement: Element | null = null
+    let matchedSelector = ''
 
-    // Debug: Log all class names containing common keywords for debugging
-    const allElements = document.querySelectorAll('[class]')
-    const relevantClasses: string[] = []
-    allElements.forEach((el) => {
-      const className = el.className
-      if (typeof className === 'string' &&
-          (className.includes('content') || className.includes('doc') ||
-           className.includes('editor') || className.includes('article') ||
-           className.includes('render') || className.includes('wiki'))) {
-        relevantClasses.push(className.split(' ')[0])
-      }
-    })
-    console.log('[FeishuExtractor] Relevant class names found:', [...new Set(relevantClasses)].slice(0, 20))
-
-    // Debug: Try each selector individually
-    for (const selector of FEISHU_SELECTORS.articleWrapper) {
+    // Strategy 1: Try known container selectors directly.
+    for (const selector of FEISHU_SELECTORS.container) {
       const el = document.querySelector(selector)
       if (el) {
-        console.log(`[FeishuExtractor] Found wrapper with selector "${selector}":`, el.className)
+        const textLen = el.textContent?.length || 0
+        // A real container should have substantial content.
+        // Also check it has multiple child elements (blocks).
+        const childCount = el.children.length
+        if (textLen < 100 || childCount < 2) {
+          console.log(`[FeishuExtractor] Skipping container "${selector}" — too small (${textLen} chars, ${childCount} children)`)
+          continue
+        }
+        contentElement = el
+        matchedSelector = selector
+        console.log(`[FeishuExtractor] Container found via "${selector}" (${textLen} chars, ${childCount} children, ${(el as HTMLElement).innerHTML.length} bytes HTML)`)
+        break
       }
     }
 
-    // Find the main content wrapper first
-    let articleWrapper = queryFirst(FEISHU_SELECTORS.articleWrapper)
-
-    // Fallback: try to find content directly
-    if (!articleWrapper) {
-      console.log('[FeishuExtractor] Trying mainContent selectors directly...')
-      articleWrapper = queryFirst(FEISHU_SELECTORS.mainContent)
+    // Strategy 2: Find a contenteditable leaf and walk UP to the container.
+    // The container is the nearest ancestor that holds multiple contenteditable children.
+    if (!contentElement) {
+      console.log('[FeishuExtractor] No container selector matched. Trying leaf-walk-up...')
+      let leaf: Element | null = null
+      for (const sel of FEISHU_SELECTORS.leaf) {
+        leaf = document.querySelector(sel)
+        if (leaf) break
+      }
+      if (leaf) {
+        let parent = leaf.parentElement
+        // Walk up, looking for a parent that contains ≥2 contenteditable descendants
+        // (which means it's a multi-block container, not just one paragraph)
+        for (let depth = 0; parent && depth < 15; depth++) {
+          const editableCount = parent.querySelectorAll('[contenteditable="true"]').length
+          const textLen = parent.textContent?.length || 0
+          // Good container: has multiple editable blocks AND substantial text
+          // Also reject if we've hit body or something with sidebar/toolbar indicators
+          if (editableCount >= 2 && textLen > 200) {
+            // Make sure this isn't too broad (e.g. body, #mainBox with sidebar)
+            const hasSidebar = parent.querySelector('[class*="sidebar"], [class*="catalog-container"], [class*="navigation"]')
+            if (!hasSidebar || parent.querySelector('[class*="page-content"], [class*="editor"]')) {
+              contentElement = parent
+              matchedSelector = `leaf-walk-up (depth=${depth}, ${editableCount} editables, ${textLen} chars)`
+              console.log(`[FeishuExtractor] ${matchedSelector}, tag=${parent.tagName}, class=${parent.className?.substring(0, 60)}`)
+              break
+            }
+          }
+          parent = parent.parentElement
+        }
+      }
     }
 
-    // Fallback: use body if nothing else works but we're on a valid feishu page
-    if (!articleWrapper) {
-      console.warn('[FeishuExtractor] Could not find article wrapper, using body as fallback')
-      console.warn('[FeishuExtractor] Tried selectors:', FEISHU_SELECTORS.articleWrapper)
-      articleWrapper = document.body
-    }
-
-    console.log('[FeishuExtractor] Found article wrapper:', articleWrapper.className || 'body')
-
-    // Get main content from within the wrapper
-    let contentElement = queryFirst(FEISHU_SELECTORS.mainContent, articleWrapper)
-
-    // If not found in wrapper, try document-wide
-    if (!contentElement && articleWrapper !== document.body) {
-      console.log('[FeishuExtractor] Trying mainContent selectors on document...')
-      contentElement = queryFirst(FEISHU_SELECTORS.mainContent, document)
+    // Strategy 3: Heuristic — find the div with the most paragraph-like content
+    if (!contentElement) {
+      console.warn('[FeishuExtractor] No container found. Trying heuristic: largest text container...')
+      let bestEl: Element | null = null
+      let bestScore = 0
+      document.querySelectorAll('div, article, section, main').forEach((el) => {
+        if (el === document.body || el.tagName === 'HTML') return
+        const textLen = el.textContent?.length || 0
+        const editableCount = el.querySelectorAll('[contenteditable="true"]').length
+        const hasContentSignals = el.querySelector('p, h1, h2, h3, h4, h5, h6, img, pre')
+        if (!hasContentSignals) return
+        // Score: text length + bonus for having multiple editable blocks
+        const score = textLen + editableCount * 500
+        if (score > bestScore) {
+          bestScore = score
+          bestEl = el
+        }
+      })
+      if (bestEl) {
+        contentElement = bestEl
+        matchedSelector = `heuristic (score=${bestScore})`
+        console.log(`[FeishuExtractor] Heuristic match: ${(bestEl as HTMLElement).className?.substring(0, 60)} (score=${bestScore})`)
+      }
     }
 
     if (!contentElement) {
-      console.warn('[FeishuExtractor] Could not find main content element')
-      // Try to use the wrapper itself as content
-      console.log('[FeishuExtractor] Using article wrapper as content')
+      console.error('[FeishuExtractor] Could not find any content element')
+      return null
     }
 
-    // Get HTML content
-    let html = contentElement ? contentElement.innerHTML : articleWrapper.innerHTML
+    // Clone so we don't mutate the live DOM
+    const targetEl = contentElement.cloneNode(true) as HTMLElement
 
+    // Remove UI chrome that might be inside the content container
+    targetEl.querySelectorAll([
+      '[class*="doc-info-wrapper"]', '[class*="doc-meta"]', '[class*="doc-info"]',
+      '[class*="sidebar"]', '[class*="toolbar"]', '[class*="tooltip"]',
+      '[class*="catalog"]', '[class*="comment"]', '[class*="navigation"]',
+      '[class*="header-bar"]', '[class*="title-input"]',
+      '[class*="reaction"]', '[class*="like-btn"]',
+      '[data-testid*="toolbar"]', '[data-testid*="sidebar"]',
+      'button', '[role="button"]',
+    ].join(', ')).forEach((el) => el.remove())
+
+    // Get HTML content
+    let html = targetEl.innerHTML
+
+    console.log('[FeishuExtractor] Matched selector:', matchedSelector)
+    console.log('[FeishuExtractor] Container tag:', contentElement.tagName, 'children:', contentElement.children.length)
+    console.log('[FeishuExtractor] Editable blocks inside:', contentElement.querySelectorAll('[contenteditable="true"]').length)
+    console.log('[FeishuExtractor] Images inside:', contentElement.querySelectorAll('img').length)
     console.log('[FeishuExtractor] HTML length before cleaning:', html.length)
 
     // Clean and process HTML
@@ -425,14 +426,51 @@ function extractFeishuArticle(): Article | null {
     const coverMeta = document.querySelector('meta[property="og:image"]')
     if (coverMeta) {
       cover = coverMeta.getAttribute('content') || undefined
+      console.log('[FeishuExtractor] Cover from og:image meta tag:', cover)
     }
+
+    // Extract images first to use for cover fallback
+    const images = extractImagesFromHtml(html)
+    console.log('[FeishuExtractor] Total images found:', images.length)
+
+    // If no og:image meta tag, use the first image from content
+    if (!cover && images.length > 0) {
+      cover = images[0]
+      console.log('[FeishuExtractor] Using first image as cover:', cover)
+    }
+
+    console.log('[FeishuExtractor] Final cover URL:', cover || 'none')
 
     // Get description from meta
     const descriptionMeta = document.querySelector('meta[property="og:description"], meta[name="description"]')
     const description = descriptionMeta?.getAttribute('content') || undefined
 
-    // Extract images
-    const images = extractImagesFromHtml(html)
+    // Pre-download images in content script context (has Feishu CDN cookies)
+    const imageDataMap: Record<string, string> = {}
+    if (images.length > 0) {
+      console.log(`[FeishuExtractor] Pre-downloading ${images.length} images...`)
+      for (const imgUrl of images) {
+        try {
+          const resp = await fetch(imgUrl, { credentials: 'include' })
+          if (resp.ok) {
+            const blob = await resp.blob()
+            const dataUrl = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader()
+              reader.onload = () => resolve(reader.result as string)
+              reader.onerror = () => reject(new Error('FileReader error'))
+              reader.readAsDataURL(blob)
+            })
+            imageDataMap[imgUrl] = dataUrl
+            console.log(`[FeishuExtractor] Downloaded image: ${imgUrl.substring(0, 80)}...`)
+          } else {
+            console.warn(`[FeishuExtractor] Failed to download image (${resp.status}): ${imgUrl}`)
+          }
+        } catch (err) {
+          console.warn(`[FeishuExtractor] Image download error: ${imgUrl}`, err)
+        }
+      }
+      console.log(`[FeishuExtractor] Downloaded ${Object.keys(imageDataMap).length}/${images.length} images`)
+    }
 
     // Build article object
     const article: Article = {
@@ -451,8 +489,13 @@ function extractFeishuArticle(): Article | null {
       article.images = images
     }
 
+    if (Object.keys(imageDataMap).length > 0) {
+      article.imageDataMap = imageDataMap
+    }
+
     console.log(`[FeishuExtractor] Successfully extracted article: ${title}`)
     console.log('[FeishuExtractor] Image count:', images.length)
+    console.log('[FeishuExtractor] Pre-downloaded images:', Object.keys(imageDataMap).length)
 
     return article
   } catch (error) {
@@ -484,13 +527,10 @@ function initializeContentScript() {
     if (message.type === 'EXTRACT_ARTICLE') {
       console.log('[FeishuExtractor] Extracting article...')
 
-      // Use setTimeout to allow async response
-      setTimeout(() => {
-        try {
-          const article = extractFeishuArticle()
-
+      extractFeishuArticle()
+        .then((article) => {
           if (article) {
-            console.log('[FeishuExtractor] Sending article:', article)
+            console.log('[FeishuExtractor] Sending article:', article.title)
             sendResponse({ article, error: null })
           } else {
             console.error('[FeishuExtractor] Failed to extract article')
@@ -499,14 +539,14 @@ function initializeContentScript() {
               error: 'Could not extract article. Make sure you are on a Feishu wiki/docs/docx page.',
             })
           }
-        } catch (error) {
+        })
+        .catch((error) => {
           console.error('[FeishuExtractor] Extraction error:', error)
           sendResponse({
             article: null,
             error: error instanceof Error ? error.message : String(error),
           })
-        }
-      }, 100)
+        })
 
       return true // Keep message channel open for async response
     }

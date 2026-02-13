@@ -117,7 +117,7 @@ function App() {
     setState((prev) => ({ ...prev, isSyncing: true, syncProgress: 'Starting sync...' }))
 
     try {
-      const response = await runtime.sendToBackground<{ results: SyncResult[] }>({
+      const response = await runtime.sendMessage<{ results: SyncResult[] }>({
         type: 'SYNC_ARTICLE',
         article: state.article,
         platforms: selectedPlatforms,
