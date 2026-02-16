@@ -1,12 +1,13 @@
 /**
- * Feishu Content Extractor (Simplified)
- * Specialized extractor for Feishu (Lark) wiki/docs/docx pages
+ * Feishu Content Extractor (Hybrid: SSR + DOM fallback)
+ * Extracts article content from Feishu (Lark) wiki/docs/docx pages
  *
- * Strategy: SSR-only extraction (fast, reliable, covers 90%+ cases)
- * - Extracts from window.DATA.clientVars.data.block_map
- * - No DOM fallback (keeps code simple and maintainable)
- * - Clear error messages when SSR data unavailable
+ * Strategy:
+ * 1. Try SSR data (window.DATA) - complete content, works with virtual scrolling
+ * 2. Fallback to DOM extraction - may be incomplete due to virtual scrolling
  */
+
+import TurndownService from 'turndown'
 
 // Types for internal use
 interface Article {
@@ -28,7 +29,7 @@ interface FeishuBlock {
   id: string
   version: number
   data: {
-    type: string  // text, heading1-9, image, code, etc.
+    type: string
     text?: {
       initialAttributedTexts?: {
         text?: Record<string, string>
@@ -42,8 +43,6 @@ interface FeishuBlock {
       language?: string
       text?: string
     }
-    parent_id?: string
-    children?: string[]
     [key: string]: any
   }
 }
@@ -58,7 +57,6 @@ interface FeishuSSRData {
   }
   meta?: {
     title?: string
-    token?: string
     [key: string]: any
   }
 }
@@ -79,57 +77,6 @@ function isFeishuPage(): boolean {
 }
 
 /**
- * Wait for window.DATA to be available
- * Feishu injects DATA in multiple steps, need to wait for clientVars.data.block_map
- */
-async function waitForSSRData(timeoutMs: number = 10000): Promise<FeishuSSRData | null> {
-  const startTime = Date.now()
-
-  // Check if already available
-  const existingData = (window as any).DATA
-  if (existingData?.clientVars?.data?.block_map) {
-    console.log('[FeishuExtractor] window.DATA already available')
-    return existingData as FeishuSSRData
-  }
-
-  console.log('[FeishuExtractor] Waiting for window.DATA.clientVars.data.block_map...')
-
-  // Poll for DATA with exponential backoff
-  return new Promise((resolve) => {
-    const checkInterval = 200 // Check every 200ms
-    let attempts = 0
-
-    const intervalId = setInterval(() => {
-      attempts++
-      const elapsed = Date.now() - startTime
-
-      const windowData = (window as any).DATA
-
-      // Check for complete DATA structure
-      if (windowData?.clientVars?.data?.block_map) {
-        const blockCount = Object.keys(windowData.clientVars.data.block_map).length
-        console.log(`[FeishuExtractor] window.DATA.clientVars.data.block_map found after ${elapsed}ms (${attempts} attempts, ${blockCount} blocks)`)
-        clearInterval(intervalId)
-        resolve(windowData as FeishuSSRData)
-        return
-      }
-
-      // Log progress every 1 second
-      if (attempts % 5 === 0) {
-        console.log(`[FeishuExtractor] Still waiting... (${elapsed}ms, window.DATA exists: ${!!windowData}, clientVars exists: ${!!windowData?.clientVars})`)
-      }
-
-      if (elapsed >= timeoutMs) {
-        console.warn(`[FeishuExtractor] Timeout waiting for window.DATA after ${elapsed}ms`)
-        console.warn(`[FeishuExtractor] Final state: DATA=${!!windowData}, clientVars=${!!windowData?.clientVars}, data=${!!windowData?.clientVars?.data}, block_map=${!!windowData?.clientVars?.data?.block_map}`)
-        clearInterval(intervalId)
-        resolve(null)
-      }
-    }, checkInterval)
-  })
-}
-
-/**
  * Get Feishu SSR data from window.DATA
  */
 function getFeishuSSRData(): FeishuSSRData | null {
@@ -140,12 +87,7 @@ function getFeishuSSRData(): FeishuSSRData | null {
       return null
     }
 
-    console.log('[FeishuExtractor] Found window.DATA:', {
-      hasClientVars: !!windowData.clientVars,
-      hasMeta: !!windowData.meta,
-      metaTitle: windowData.meta?.title,
-    })
-
+    console.log('[FeishuExtractor] Found window.DATA')
     return windowData as FeishuSSRData
   } catch (error) {
     console.error('[FeishuExtractor] Failed to get SSR data:', error)
@@ -154,76 +96,199 @@ function getFeishuSSRData(): FeishuSSRData | null {
 }
 
 /**
- * Normalize URL for consistent matching
- * Decodes HTML entities to match markdown extraction
+ * Convert Feishu block to HTML
  */
-function normalizeImageUrl(url: string): string {
+function blockToHtml(block: FeishuBlock): string {
+  const type = block.data.type
+
+  // Text blocks
+  if (type === 'text' || type === 'paragraph') {
+    const text = block.data.text?.initialAttributedTexts?.text?.['0'] || ''
+    return `<p>${text}</p>`
+  }
+
+  // Headings
+  if (type.startsWith('heading')) {
+    const level = type.replace('heading', '')
+    const text = block.data.text?.initialAttributedTexts?.text?.['0'] || ''
+    return `<h${level}>${text}</h${level}>`
+  }
+
+  // Images
+  if (type === 'image') {
+    const url = block.data.image?.url || ''
+    if (url) {
+      return `<img src="${url}" />`
+    }
+  }
+
+  // Code blocks
+  if (type === 'code') {
+    const code = block.data.code?.text || ''
+    const lang = block.data.code?.language || ''
+    return `<pre><code class="language-${lang}">${code}</code></pre>`
+  }
+
+  // Lists
+  if (type === 'bullet' || type === 'ordered') {
+    const text = block.data.text?.initialAttributedTexts?.text?.['0'] || ''
+    return `<li>${text}</li>`
+  }
+
+  // Fallback: extract any text
+  const text = block.data.text?.initialAttributedTexts?.text?.['0'] || ''
+  if (text) {
+    return `<p>${text}</p>`
+  }
+
+  return ''
+}
+
+/**
+ * Extract article from SSR data
+ */
+async function extractFromSSR(ssrData: FeishuSSRData): Promise<Article | null> {
+  try {
+    console.log('[FeishuExtractor] Extracting from SSR data...')
+
+    const title = ssrData.meta?.title || 'Untitled Document'
+    const blockMap = ssrData.clientVars?.data?.block_map
+    const blockSequence = ssrData.clientVars?.data?.block_sequence
+
+    if (!blockMap) {
+      console.warn('[FeishuExtractor] No block_map found')
+      return null
+    }
+
+    console.log('[FeishuExtractor] Found', Object.keys(blockMap).length, 'blocks')
+
+    // Get ordered blocks
+    let orderedBlocks: FeishuBlock[]
+    if (blockSequence && Array.isArray(blockSequence)) {
+      orderedBlocks = blockSequence
+        .slice(1) // Skip document root
+        .map((id: string) => blockMap[id])
+        .filter((block: FeishuBlock) => block != null)
+    } else {
+      orderedBlocks = Object.values(blockMap)
+    }
+
+    // Convert blocks to HTML
+    const htmlParts: string[] = []
+    const imageUrls: string[] = []
+
+    for (const block of orderedBlocks) {
+      const html = blockToHtml(block)
+      if (html) {
+        htmlParts.push(html)
+
+        // Extract image URLs
+        if (block.data.type === 'image' && block.data.image?.url) {
+          const url = decodeHtmlEntities(block.data.image.url)
+          if (!imageUrls.includes(url)) {
+            imageUrls.push(url)
+          }
+        }
+      }
+    }
+
+    const html = htmlParts.join('\n')
+    console.log('[FeishuExtractor] Generated HTML length:', html.length)
+    console.log('[FeishuExtractor] Found', imageUrls.length, 'images')
+
+    // Convert to Markdown
+    const markdown = htmlToMarkdown(html)
+
+    // Download images
+    const imageDataMap = await downloadImages(imageUrls)
+
+    return {
+      title,
+      markdown,
+      html,
+      source: {
+        url: window.location.href,
+        platform: 'feishu',
+      },
+      images: imageUrls.length > 0 ? imageUrls : undefined,
+      imageDataMap: Object.keys(imageDataMap).length > 0 ? imageDataMap : undefined,
+    }
+  } catch (error) {
+    console.error('[FeishuExtractor] SSR extraction failed:', error)
+    return null
+  }
+}
+
+/**
+ * Decode HTML entities in URL
+ */
+function decodeHtmlEntities(url: string): string {
   return url
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ')
 }
 
 /**
- * Build Feishu image URL from token
+ * Process lazy-loaded images
+ * Feishu uses data-src for lazy loading
  */
-function buildImageURL(token: string): string {
-  const docToken = (window as any).DATA?.meta?.token || ''
-  const domain = window.location.hostname
+function processLazyImages(container: HTMLElement): void {
+  const images = container.querySelectorAll('img')
 
-  return `https://internal-api-drive-stream.${domain.includes('feishu.cn') ? 'feishu.cn' : 'larksuite.com'}/space/api/box/stream/download/v2/cover/${token}/?fallback_source=1&height=1280&mount_node_token=${docToken}&mount_point=docx_image&policy=equal&width=1280`
+  images.forEach((img) => {
+    // Find real image URL from various lazy-load attributes
+    let realSrc =
+      img.getAttribute('data-src') ||
+      img.getAttribute('data-original') ||
+      img.getAttribute('data-actualsrc') ||
+      img.getAttribute('_src') ||
+      img.src
+
+    // Decode HTML entities in URL
+    if (realSrc) {
+      realSrc = decodeHtmlEntities(realSrc)
+    }
+
+    // Skip data URLs (SVG placeholders)
+    if (realSrc && !realSrc.startsWith('data:image/svg')) {
+      img.setAttribute('src', realSrc)
+    }
+
+    // Clean up lazy-load attributes
+    img.removeAttribute('data-src')
+    img.removeAttribute('data-original')
+    img.removeAttribute('data-actualsrc')
+    img.removeAttribute('_src')
+    img.removeAttribute('data-ratio')
+    img.removeAttribute('data-w')
+    img.removeAttribute('data-type')
+    img.removeAttribute('data-s')
+  })
 }
 
 /**
- * Convert Feishu block to markdown
+ * Extract images from container
  */
-function blockToMarkdown(block: FeishuBlock): string {
-  const { type, text, image, code } = block.data
+function extractImages(container: HTMLElement): string[] {
+  const images: string[] = []
+  const imgElements = container.querySelectorAll('img')
 
-  // Extract text content
-  const getText = (): string => {
-    if (!text?.initialAttributedTexts?.text) return ''
-    const textObj = text.initialAttributedTexts.text
-    return Object.values(textObj).join('')
-  }
+  imgElements.forEach((img) => {
+    let src = img.src
+    // Decode HTML entities
+    if (src) {
+      src = decodeHtmlEntities(src)
+    }
+    if (src && !src.startsWith('data:') && !images.includes(src)) {
+      images.push(src)
+    }
+  })
 
-  switch (type) {
-    case 'heading1':
-      return `# ${getText()}\n\n`
-    case 'heading2':
-      return `## ${getText()}\n\n`
-    case 'heading3':
-      return `### ${getText()}\n\n`
-    case 'heading4':
-      return `#### ${getText()}\n\n`
-    case 'heading5':
-      return `##### ${getText()}\n\n`
-    case 'heading6':
-      return `###### ${getText()}\n\n`
-    case 'heading7':
-    case 'heading8':
-    case 'heading9':
-      return `###### ${getText()}\n\n`
-    case 'text':
-      return `${getText()}\n\n`
-    case 'image':
-      let imageUrl = ''
-      if (image?.token) {
-        imageUrl = buildImageURL(image.token)
-      } else if (image?.url) {
-        imageUrl = normalizeImageUrl(image.url)
-      }
-      return imageUrl ? `![](${imageUrl})\n\n` : ''
-    case 'code':
-      const lang = code?.language || ''
-      const codeText = code?.text || getText()
-      return `\`\`\`${lang}\n${codeText}\n\`\`\`\n\n`
-    default:
-      const content = getText()
-      return content ? `${content}\n\n` : ''
-  }
+  return images
 }
 
 /**
@@ -236,9 +301,11 @@ async function downloadImages(imageUrls: string[]): Promise<Record<string, strin
   if (imageUrls.length === 0) return imageDataMap
 
   console.log(`[FeishuExtractor] Pre-downloading ${imageUrls.length} images...`)
+  console.log(`[FeishuExtractor] Image URLs:`, imageUrls)
 
   for (const imgUrl of imageUrls) {
     try {
+      console.log(`[FeishuExtractor] Downloading: ${imgUrl}`)
       const resp = await fetch(imgUrl, { credentials: 'include' })
       if (resp.ok) {
         const blob = await resp.blob()
@@ -249,88 +316,385 @@ async function downloadImages(imageUrls: string[]): Promise<Record<string, strin
           reader.readAsDataURL(blob)
         })
 
-        // Normalize URL to match markdown extraction
-        const normalizedUrl = normalizeImageUrl(imgUrl)
-        imageDataMap[normalizedUrl] = dataUrl
-
-        console.log(`[FeishuExtractor] Downloaded: ${imgUrl.substring(0, 80)}...`)
+        imageDataMap[imgUrl] = dataUrl
+        console.log(`[FeishuExtractor] Downloaded successfully: ${imgUrl.substring(0, 80)}...`)
+      } else {
+        console.warn(`[FeishuExtractor] Download failed (${resp.status}): ${imgUrl}`)
       }
     } catch (err) {
-      console.warn(`[FeishuExtractor] Download failed: ${imgUrl}`, err)
+      console.warn(`[FeishuExtractor] Download error: ${imgUrl}`, err)
     }
   }
 
   console.log(`[FeishuExtractor] Downloaded ${Object.keys(imageDataMap).length}/${imageUrls.length} images`)
+  console.log(`[FeishuExtractor] imageDataMap keys:`, Object.keys(imageDataMap))
   return imageDataMap
 }
 
 /**
- * Extract article from SSR data
+ * Create Turndown service for HTML to Markdown conversion
  */
-async function extractArticleFromSSR(ssrData: FeishuSSRData): Promise<Article | null> {
+function createTurndownService(): TurndownService {
+  const turndownService = new TurndownService({
+    headingStyle: 'atx',
+    codeBlockStyle: 'fenced',
+    fence: '```',
+    emDelimiter: '*',
+    strongDelimiter: '**',
+    linkStyle: 'inlined',
+  })
+
+  // Custom rule for images to decode HTML entities in URLs
+  turndownService.addRule('images', {
+    filter: 'img',
+    replacement: function (content, node) {
+      const alt = (node as HTMLImageElement).alt || ''
+      let src = (node as HTMLImageElement).getAttribute('src') || ''
+
+      // Decode HTML entities in URL
+      src = decodeHtmlEntities(src)
+
+      return src ? '![' + alt + '](' + src + ')' : ''
+    },
+  })
+
+  // Add table support
+  turndownService.addRule('table', {
+    filter: 'table',
+    replacement: function (content) {
+      return '\n\n' + content + '\n\n'
+    },
+  })
+
+  turndownService.addRule('tableRow', {
+    filter: 'tr',
+    replacement: function (content, node) {
+      return content + '\n'
+    },
+  })
+
+  turndownService.addRule('tableCell', {
+    filter: ['th', 'td'],
+    replacement: function (content, node) {
+      const parent = node.parentNode as HTMLElement
+      const siblings = parent.querySelectorAll('th, td')
+      const index = Array.from(siblings).indexOf(node as HTMLElement)
+      const prefix = index === 0 ? '| ' : ' '
+      return prefix + content + ' |'
+    },
+  })
+
+  return turndownService
+}
+
+/**
+ * Convert HTML to Markdown using Turndown
+ */
+function htmlToMarkdown(html: string): string {
+  const turndownService = createTurndownService()
+  return turndownService.turndown(html)
+}
+
+/**
+ * Collect all content blocks by scrolling and observing DOM changes
+ * Based on: https://greasyfork.org/scripts/470055
+ */
+async function collectAllContentBlocks(): Promise<DocumentFragment | null> {
+  console.log('[FeishuExtractor] Collecting all content blocks...')
+
+  const scrollContainer = document.querySelector('.bear-web-x-container') as HTMLElement
+  const contentContainer = document.querySelector('.render-unit-wrapper') as HTMLElement
+
+  if (!scrollContainer || !contentContainer) {
+    console.warn('[FeishuExtractor] Could not find Feishu containers')
+    console.log('[FeishuExtractor] scrollContainer:', !!scrollContainer)
+    console.log('[FeishuExtractor] contentContainer:', !!contentContainer)
+    return null
+  }
+
+  console.log('[FeishuExtractor] Found Feishu containers')
+
+  const fragment = document.createDocumentFragment()
+  const collectedIds = new Set<string>()
+
+  // Collect existing nodes
+  function collectNodes(nodes: NodeList) {
+    for (const node of Array.from(nodes)) {
+      const el = node as HTMLElement
+      if (el.hasAttribute && el.hasAttribute('data-block-id') && !el.classList.contains('isEmpty')) {
+        const blockId = el.getAttribute('data-block-id')
+        if (blockId && !collectedIds.has(blockId)) {
+          fragment.appendChild(el.cloneNode(true))
+          collectedIds.add(blockId)
+        }
+      }
+    }
+  }
+
+  // Collect initial content
+  collectNodes(contentContainer.childNodes)
+  console.log('[FeishuExtractor] Initial blocks collected:', collectedIds.size)
+
+  // Set up observer for new content
+  const observer = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
+        setTimeout(() => {
+          collectNodes(mutation.addedNodes)
+        }, 100)
+      }
+    }
+  })
+
+  observer.observe(contentContainer, { childList: true })
+
+  // Auto-scroll to trigger content loading
+  const scrollGap = 300
+  const scrollInterval = 200
+  let lastScrollTop = -1
+  let stableCount = 0
+
+  await new Promise<void>((resolve) => {
+    const interval = setInterval(() => {
+      if (scrollContainer.scrollTop === lastScrollTop) {
+        stableCount++
+        if (stableCount >= 3) {
+          // Stable for 3 checks, we're done
+          clearInterval(interval)
+          observer.disconnect()
+          resolve()
+        }
+      } else {
+        stableCount = 0
+        lastScrollTop = scrollContainer.scrollTop
+        scrollContainer.scrollBy(0, scrollGap)
+      }
+    }, scrollInterval)
+  })
+
+  console.log('[FeishuExtractor] Collection complete, total blocks:', collectedIds.size)
+  return fragment
+}
+
+/**
+ * Attempt to disable virtual scrolling by forcing full render
+ */
+async function disableVirtualScrolling(): Promise<boolean> {
+  console.log('[FeishuExtractor] Attempting to disable virtual scrolling...')
+
   try {
-    console.log('[FeishuExtractor] Extracting from SSR data...')
+    // Find the scroll container
+    const selectors = ['.doc-render', '.wiki-render', '.docs-reader', '[class*="render"]']
+    let container: HTMLElement | null = null
 
-    // Extract title
-    const title = ssrData.meta?.title || 'Untitled Document'
-    console.log('[FeishuExtractor] Title:', title)
+    for (const selector of selectors) {
+      const el = document.querySelector(selector) as HTMLElement
+      if (el && el.scrollHeight > el.clientHeight) {
+        container = el
+        console.log('[FeishuExtractor] Found scroll container:', selector)
+        break
+      }
+    }
 
-    // Extract blocks
-    const blockMap = ssrData.clientVars?.data?.block_map
-    const blockSequence = ssrData.clientVars?.data?.block_sequence
+    if (!container) {
+      console.warn('[FeishuExtractor] Could not find scroll container')
+      return false
+    }
 
-    if (!blockMap) {
-      console.warn('[FeishuExtractor] No block_map found in SSR data')
+    // Save original styles
+    const originalStyles = {
+      height: container.style.height,
+      maxHeight: container.style.maxHeight,
+      overflow: container.style.overflow,
+    }
+
+    // Force full height to render all content
+    container.style.height = 'auto'
+    container.style.maxHeight = 'none'
+    container.style.overflow = 'visible'
+
+    console.log('[FeishuExtractor] Modified container styles, waiting for render...')
+
+    // Wait for content to render
+    await new Promise(resolve => setTimeout(resolve, 2000))
+
+    // Check if it worked
+    const imageCount = container.querySelectorAll('img').length
+    const textLength = container.textContent?.length || 0
+
+    console.log('[FeishuExtractor] After disabling virtual scroll:', {
+      imageCount,
+      textLength,
+    })
+
+    // Restore original styles (optional - keep disabled for extraction)
+    // container.style.height = originalStyles.height
+    // container.style.maxHeight = originalStyles.maxHeight
+    // container.style.overflow = originalStyles.overflow
+
+    return imageCount > 0 || textLength > 1000
+  } catch (error) {
+    console.error('[FeishuExtractor] Failed to disable virtual scrolling:', error)
+    return false
+  }
+}
+
+/**
+ * Scroll page to load all lazy-loaded content
+ * Feishu uses virtual scrolling - content only loads when visible
+ */
+async function scrollToLoadAllContent(): Promise<void> {
+  console.log('[FeishuExtractor] Starting auto-scroll to load all content...')
+
+  const scrollContainer = document.querySelector('.doc-render, .wiki-render, .docs-reader, [class*="render"]') as HTMLElement
+  if (!scrollContainer) {
+    console.warn('[FeishuExtractor] Could not find scroll container, using window')
+  }
+
+  const targetElement = scrollContainer || document.documentElement
+  const scrollHeight = targetElement.scrollHeight
+  const clientHeight = targetElement.clientHeight
+  const scrollStep = clientHeight * 0.8 // Scroll 80% of viewport at a time
+  let currentScroll = 0
+
+  console.log('[FeishuExtractor] Total scroll height:', scrollHeight)
+
+  // Scroll down in steps to trigger lazy loading
+  while (currentScroll < scrollHeight) {
+    currentScroll += scrollStep
+
+    if (scrollContainer) {
+      scrollContainer.scrollTop = currentScroll
+    } else {
+      window.scrollTo(0, currentScroll)
+    }
+
+    // Wait for content to load
+    await new Promise(resolve => setTimeout(resolve, 300))
+  }
+
+  // Scroll to bottom to ensure everything is loaded
+  if (scrollContainer) {
+    scrollContainer.scrollTop = scrollHeight
+  } else {
+    window.scrollTo(0, scrollHeight)
+  }
+  await new Promise(resolve => setTimeout(resolve, 500))
+
+  // Scroll back to top
+  if (scrollContainer) {
+    scrollContainer.scrollTop = 0
+  } else {
+    window.scrollTo(0, 0)
+  }
+  await new Promise(resolve => setTimeout(resolve, 200))
+
+  console.log('[FeishuExtractor] Auto-scroll completed')
+}
+
+/**
+ * Extract article from Feishu page (hybrid approach)
+ */
+async function extractFeishuArticle(): Promise<Article | null> {
+  try {
+    console.log('[FeishuExtractor] Starting extraction...')
+
+    if (!isFeishuPage()) {
+      console.warn('[FeishuExtractor] Not a Feishu page')
       return null
     }
 
-    console.log('[FeishuExtractor] Found', Object.keys(blockMap).length, 'blocks in block_map')
-
-    // Use block_sequence to maintain correct order
-    let orderedBlocks: FeishuBlock[]
-
-    if (blockSequence && Array.isArray(blockSequence)) {
-      console.log('[FeishuExtractor] Using block_sequence with', blockSequence.length, 'blocks')
-      // Skip first block (document root)
-      orderedBlocks = blockSequence
-        .slice(1)
-        .map((id: string) => blockMap[id])
-        .filter((block: FeishuBlock) => block != null)
-    } else {
-      // Fallback: find root blocks
-      console.log('[FeishuExtractor] No block_sequence, using parent_id filtering')
-      const docToken = ssrData.meta?.token
-      orderedBlocks = Object.values(blockMap).filter(
-        (block) => block.data.parent_id === docToken
-      )
+    // Try SSR extraction first (works with virtual scrolling)
+    const ssrData = getFeishuSSRData()
+    if (ssrData) {
+      console.log('[FeishuExtractor] Using SSR extraction (complete content)')
+      const article = await extractFromSSR(ssrData)
+      if (article) {
+        return article
+      }
     }
 
-    console.log('[FeishuExtractor] Processing', orderedBlocks.length, 'blocks')
+    // Fallback to DOM extraction (may be incomplete due to virtual scrolling)
+    console.warn('[FeishuExtractor] SSR extraction failed, falling back to DOM extraction')
+    console.warn('[FeishuExtractor] WARNING: Content may be incomplete due to virtual scrolling')
+    return await extractFromDOM()
+  } catch (error) {
+    console.error('[FeishuExtractor] Extraction failed:', error)
+    throw error
+  }
+}
 
-    // Convert blocks to markdown and collect image URLs
-    let markdown = ''
-    const images: string[] = []
+/**
+ * Extract from DOM (fallback, may be incomplete)
+ */
+async function extractFromDOM(): Promise<Article | null> {
+  try {
+    console.log('[FeishuExtractor] Starting DOM-based extraction...')
 
-    for (const block of orderedBlocks) {
-      const blockMarkdown = blockToMarkdown(block)
-      markdown += blockMarkdown
+    // Try to collect all content blocks (handles virtual scrolling)
+    const fragment = await collectAllContentBlocks()
+    let contentContainer: HTMLElement | DocumentFragment | null = fragment
 
-      // Collect image URLs
-      if (block.data.type === 'image') {
-        let imageUrl = ''
-        if (block.data.image?.token) {
-          imageUrl = buildImageURL(block.data.image.token)
-        } else if (block.data.image?.url) {
-          imageUrl = normalizeImageUrl(block.data.image.url)
-        }
-        if (imageUrl) {
-          images.push(imageUrl)
+    if (!contentContainer) {
+      console.warn('[FeishuExtractor] Could not collect content blocks, trying standard selectors...')
+
+      // Fallback to standard selectors
+      const selectors = [
+        '.doc-render',
+        '.wiki-render',
+        '.docs-reader',
+        '[class*="render"]',
+        'article',
+        'main',
+      ]
+
+      for (const selector of selectors) {
+        const el = document.querySelector(selector) as HTMLElement
+        if (el && el.textContent && el.textContent.trim().length > 100) {
+          contentContainer = el
+          console.log('[FeishuExtractor] Found content with selector:', selector)
+          break
         }
       }
     }
 
-    console.log('[FeishuExtractor] Generated markdown length:', markdown.length)
+    if (!contentContainer) {
+      throw new Error('无法找到文档内容区域')
+    }
+
+    // Extract title
+    let title = document.querySelector('meta[property="og:title"]')?.getAttribute('content')
+    if (!title) {
+      title = document.title.split(' - ')[0].trim()
+    }
+    if (!title) {
+      title = 'Untitled Document'
+    }
+    console.log('[FeishuExtractor] Title:', title)
+
+    // Clone content to avoid modifying the page
+    let clonedContent: HTMLElement
+    if (contentContainer instanceof DocumentFragment) {
+      // Create a temporary container for the fragment
+      clonedContent = document.createElement('div')
+      clonedContent.appendChild(contentContainer.cloneNode(true))
+    } else {
+      clonedContent = contentContainer.cloneNode(true) as HTMLElement
+    }
+
+    // Process lazy-loaded images
+    processLazyImages(clonedContent)
+
+    // Extract images
+    const images = extractImages(clonedContent)
     console.log('[FeishuExtractor] Found', images.length, 'images')
+
+    // Get HTML content
+    const html = clonedContent.innerHTML
+
+    // Convert to Markdown
+    const markdown = htmlToMarkdown(html)
+    console.log('[FeishuExtractor] Generated markdown length:', markdown.length)
 
     // Get cover image
     let cover: string | undefined
@@ -349,6 +713,7 @@ async function extractArticleFromSSR(ssrData: FeishuSSRData): Promise<Article | 
     const article: Article = {
       title,
       markdown: markdown.trim(),
+      html,
       cover,
       source: {
         url: window.location.href,
@@ -358,41 +723,7 @@ async function extractArticleFromSSR(ssrData: FeishuSSRData): Promise<Article | 
       imageDataMap: Object.keys(imageDataMap).length > 0 ? imageDataMap : undefined,
     }
 
-    console.log('[FeishuExtractor] Successfully extracted article from SSR data')
-    return article
-  } catch (error) {
-    console.error('[FeishuExtractor] Failed to extract from SSR data:', error)
-    return null
-  }
-}
-
-/**
- * Extract article from Feishu page (SSR-only, no DOM fallback)
- */
-async function extractFeishuArticle(): Promise<Article | null> {
-  try {
-    console.log('[FeishuExtractor] Starting extraction...')
-
-    if (!isFeishuPage()) {
-      console.warn('[FeishuExtractor] Not a Feishu page')
-      return null
-    }
-
-    // Wait for SSR data to be available (Feishu injects it after page load)
-    const ssrData = await waitForSSRData(5000)
-
-    if (!ssrData) {
-      console.error('[FeishuExtractor] No SSR data available after waiting')
-      throw new Error('该页面不支持内容提取，请刷新页面后重试。若问题持续，请联系管理员。')
-    }
-
-    const article = await extractArticleFromSSR(ssrData)
-
-    if (!article) {
-      throw new Error('内容提取失败，请确认页面已完全加载。')
-    }
-
-    console.log('[FeishuExtractor] Successfully extracted:', article.title)
+    console.log('[FeishuExtractor] Successfully extracted article')
     return article
   } catch (error) {
     console.error('[FeishuExtractor] Extraction failed:', error)
@@ -404,7 +735,7 @@ async function extractFeishuArticle(): Promise<Article | null> {
  * Initialize the content script
  */
 function initializeContentScript() {
-  console.log('[FeishuExtractor] Feishu content script loaded (simplified version)')
+  console.log('[FeishuExtractor] Feishu content script loaded (DOM-based version)')
   console.log('[FeishuExtractor] URL:', window.location.href)
   console.log('[FeishuExtractor] Is Feishu page:', isFeishuPage())
 

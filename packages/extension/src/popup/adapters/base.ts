@@ -316,6 +316,13 @@ export abstract class BaseAdapter {
         // Download image: prefer pre-downloaded data URI from content script (for authenticated CDN)
         let blob: Blob = new Blob()
         const dataUri = article.imageDataMap?.[url]
+
+        // Debug: log imageDataMap keys
+        if (!dataUri && article.imageDataMap) {
+          this.logger.debug(`Image URL not found in imageDataMap: ${url}`)
+          this.logger.debug(`Available keys in imageDataMap:`, Object.keys(article.imageDataMap))
+        }
+
         if (dataUri) {
           try {
             const resp = await fetch(dataUri)
