@@ -79,6 +79,48 @@ function isFeishuPage(): boolean {
 }
 
 /**
+ * Wait for window.DATA to be available
+ * Feishu injects DATA after page load, so we need to wait
+ */
+async function waitForSSRData(timeoutMs: number = 5000): Promise<FeishuSSRData | null> {
+  const startTime = Date.now()
+
+  // Check if already available
+  const existingData = (window as any).DATA
+  if (existingData?.clientVars?.data?.block_map) {
+    console.log('[FeishuExtractor] window.DATA already available')
+    return existingData as FeishuSSRData
+  }
+
+  console.log('[FeishuExtractor] Waiting for window.DATA...')
+
+  // Poll for DATA with exponential backoff
+  return new Promise((resolve) => {
+    const checkInterval = 100 // Check every 100ms
+    let attempts = 0
+
+    const intervalId = setInterval(() => {
+      attempts++
+      const elapsed = Date.now() - startTime
+
+      const windowData = (window as any).DATA
+      if (windowData?.clientVars?.data?.block_map) {
+        console.log(`[FeishuExtractor] window.DATA found after ${elapsed}ms (${attempts} attempts)`)
+        clearInterval(intervalId)
+        resolve(windowData as FeishuSSRData)
+        return
+      }
+
+      if (elapsed >= timeoutMs) {
+        console.warn(`[FeishuExtractor] Timeout waiting for window.DATA after ${elapsed}ms`)
+        clearInterval(intervalId)
+        resolve(null)
+      }
+    }, checkInterval)
+  })
+}
+
+/**
  * Get Feishu SSR data from window.DATA
  */
 function getFeishuSSRData(): FeishuSSRData | null {
@@ -327,11 +369,11 @@ async function extractFeishuArticle(): Promise<Article | null> {
       return null
     }
 
-    // Only use SSR data extraction (fast and reliable)
-    const ssrData = getFeishuSSRData()
+    // Wait for SSR data to be available (Feishu injects it after page load)
+    const ssrData = await waitForSSRData(5000)
 
     if (!ssrData) {
-      console.error('[FeishuExtractor] No SSR data available')
+      console.error('[FeishuExtractor] No SSR data available after waiting')
       throw new Error('该页面不支持内容提取，请刷新页面后重试。若问题持续，请联系管理员。')
     }
 
