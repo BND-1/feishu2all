@@ -80,9 +80,9 @@ function isFeishuPage(): boolean {
 
 /**
  * Wait for window.DATA to be available
- * Feishu injects DATA after page load, so we need to wait
+ * Feishu injects DATA in multiple steps, need to wait for clientVars.data.block_map
  */
-async function waitForSSRData(timeoutMs: number = 5000): Promise<FeishuSSRData | null> {
+async function waitForSSRData(timeoutMs: number = 10000): Promise<FeishuSSRData | null> {
   const startTime = Date.now()
 
   // Check if already available
@@ -92,11 +92,11 @@ async function waitForSSRData(timeoutMs: number = 5000): Promise<FeishuSSRData |
     return existingData as FeishuSSRData
   }
 
-  console.log('[FeishuExtractor] Waiting for window.DATA...')
+  console.log('[FeishuExtractor] Waiting for window.DATA.clientVars.data.block_map...')
 
   // Poll for DATA with exponential backoff
   return new Promise((resolve) => {
-    const checkInterval = 100 // Check every 100ms
+    const checkInterval = 200 // Check every 200ms
     let attempts = 0
 
     const intervalId = setInterval(() => {
@@ -104,15 +104,24 @@ async function waitForSSRData(timeoutMs: number = 5000): Promise<FeishuSSRData |
       const elapsed = Date.now() - startTime
 
       const windowData = (window as any).DATA
+
+      // Check for complete DATA structure
       if (windowData?.clientVars?.data?.block_map) {
-        console.log(`[FeishuExtractor] window.DATA found after ${elapsed}ms (${attempts} attempts)`)
+        const blockCount = Object.keys(windowData.clientVars.data.block_map).length
+        console.log(`[FeishuExtractor] window.DATA.clientVars.data.block_map found after ${elapsed}ms (${attempts} attempts, ${blockCount} blocks)`)
         clearInterval(intervalId)
         resolve(windowData as FeishuSSRData)
         return
       }
 
+      // Log progress every 1 second
+      if (attempts % 5 === 0) {
+        console.log(`[FeishuExtractor] Still waiting... (${elapsed}ms, window.DATA exists: ${!!windowData}, clientVars exists: ${!!windowData?.clientVars})`)
+      }
+
       if (elapsed >= timeoutMs) {
         console.warn(`[FeishuExtractor] Timeout waiting for window.DATA after ${elapsed}ms`)
+        console.warn(`[FeishuExtractor] Final state: DATA=${!!windowData}, clientVars=${!!windowData?.clientVars}, data=${!!windowData?.clientVars?.data}, block_map=${!!windowData?.clientVars?.data?.block_map}`)
         clearInterval(intervalId)
         resolve(null)
       }
