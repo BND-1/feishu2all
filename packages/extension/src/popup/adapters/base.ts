@@ -240,9 +240,19 @@ export abstract class BaseAdapter {
     const imageRegex = /!\[.*?\]\((.*?)\)/g
     let match
     while ((match = imageRegex.exec(markdown)) !== null) {
-      const url = match[1]
-      if (url && !urls.includes(url)) {
-        urls.push(url)
+      let url = match[1]
+      if (url) {
+        // Decode HTML entities in URL
+        url = url
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"')
+          .replace(/&#39;/g, "'")
+
+        if (!urls.includes(url)) {
+          urls.push(url)
+        }
       }
     }
     return urls

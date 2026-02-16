@@ -401,9 +401,9 @@ export class CSDNAdapter extends BaseAdapter {
         markdowncontent: article.markdown,
         content: article.html || '',
         description: article.summary || this.extractPlainText(article.markdown, 200),
-        readType: 'public',
+        readType: 'private', // Keep as private/draft, not public
         tags,
-        status: 0, // 0 = draft
+        status: 0, // 0 = draft, 2 = published
         categories: '',
         type: 'original',
         originalLink: article.source?.url || '',
@@ -411,7 +411,7 @@ export class CSDNAdapter extends BaseAdapter {
         checkOriginal: false,
         source: 'pc_mdeditor',
         createdTime: Date.now(),
-        pubStatus: 'draft',
+        pubStatus: 'draft', // Explicitly set as draft
         coverType: article.cover ? 1 : 0,
         coverImages: article.cover ? [article.cover] : [],
       }

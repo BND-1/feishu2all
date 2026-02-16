@@ -1,23 +1,59 @@
 /**
  * Global API Content Script
- * Provides article extraction functionality without violating CSP
+ * Receives intercepted API data from the injected interceptor
  * Runs at document_start on all Feishu pages
  */
 
-// Instead of injecting into page context (which violates CSP),
-// we create a content script-level API that can be accessed via custom events
-function setupContentScriptAPI() {
-  // Listen for custom events from the page (if needed in the future)
-  document.addEventListener('__feishu2all_extract_article', () => {
-    console.log('[Feishu2All] Extract article event received')
-    chrome.runtime.sendMessage({ type: 'EXTRACT_ARTICLE_FROM_PAGE' })
-  })
+// Store intercepted API responses
+const interceptedAPIData: Array<{
+  url: string
+  data: any
+  timestamp: number
+}> = []
 
-  console.log('[Feishu2All] Content script API ready')
+/**
+ * Listen for intercepted API data from page context
+ */
+window.addEventListener('message', (event) => {
+  // Only accept messages from same origin
+  if (event.origin !== window.location.origin) {
+    return
+  }
+
+  // Check if this is our intercepted API message
+  if (event.data?.type === '__FEISHU2ALL_API_INTERCEPTED__') {
+    const { url, data, timestamp } = event.data
+
+    console.log('[Feishu2All API] Received intercepted API data:', {
+      url,
+      dataKeys: Object.keys(data || {}),
+      timestamp,
+    })
+
+    // Store the intercepted data
+    interceptedAPIData.push({
+      url,
+      data,
+      timestamp,
+    })
+
+    // Dispatch custom event for feishu.ts to consume
+    document.dispatchEvent(new CustomEvent('__feishu2all_api_data_ready__', {
+      detail: {
+        url,
+        data,
+        timestamp,
+      },
+    }))
+  }
+})
+
+/**
+ * Expose API to retrieve all intercepted data
+ */
+;(window as any).__feishu2all_getAPIData = function() {
+  return interceptedAPIData
 }
-
-// Setup the API at document_start
-setupContentScriptAPI()
 
 // Log when script is loaded
 console.log('[Feishu2All API] Content script loaded')
@@ -28,9 +64,4 @@ chrome.runtime.sendMessage({
   url: window.location.href,
 }).catch(() => {
   // Background might not be ready yet, ignore
-})
-
-// Listen for API_READY from page (for debugging)
-document.addEventListener('__feishu2all_api_ready', () => {
-  console.log('[Feishu2All API] Page API ready event received')
 })

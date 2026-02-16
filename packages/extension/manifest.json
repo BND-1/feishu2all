@@ -38,6 +38,13 @@
   "content_scripts": [
     {
       "matches": ["https://*.feishu.cn/*"],
+      "js": ["src/content/interceptor.ts"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
+      "matches": ["https://*.feishu.cn/*"],
       "js": ["src/content/api.ts"],
       "run_at": "document_start",
       "all_frames": false
@@ -49,10 +56,5 @@
       "all_frames": false
     }
   ],
-  "web_accessible_resources": [
-    {
-      "resources": ["src/popup/lib/*"],
-      "matches": ["<all_urls>"]
-    }
-  ]
+  "web_accessible_resources": []
 }
