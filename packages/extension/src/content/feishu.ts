@@ -474,7 +474,25 @@ async function collectAllContentBlocks(): Promise<DocumentFragment | null> {
   function collectNodes(nodes: NodeList) {
     for (const node of Array.from(nodes)) {
       const el = node as HTMLElement
-      if (el.hasAttribute && el.hasAttribute('data-block-id') && !el.classList.contains('isEmpty')) {
+      if (el.hasAttribute && el.hasAttribute('data-block-id')) {
+        // Skip empty blocks
+        if (el.classList.contains('isEmpty')) {
+          continue
+        }
+
+        // Skip Feishu AI summary blocks (auto-generated content)
+        const classList = el.className || ''
+        const aiSummaryClasses = [
+          'docx-ai-summary-block-inner',
+          'docx-ai-summary-block-inner-v2',
+          'docx-ai-summary-block-inner-v2-isFold',
+          'fold',
+        ]
+        if (aiSummaryClasses.some(cls => classList.includes(cls))) {
+          console.log('[FeishuExtractor] Skipping AI summary block:', el.className)
+          continue
+        }
+
         const blockId = el.getAttribute('data-block-id')
         if (blockId && !collectedIds.has(blockId)) {
           fragment.appendChild(el.cloneNode(true))
