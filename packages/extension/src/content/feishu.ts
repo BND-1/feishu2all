@@ -481,15 +481,37 @@ async function collectAllContentBlocks(): Promise<DocumentFragment | null> {
         }
 
         // Skip Feishu AI summary blocks (auto-generated content)
+        // Most reliable way: check for DOC_AI_SUMMARY_ROOT_BLOCK_ID
+        const recordId = el.getAttribute('data-record-id')
+        if (recordId === 'DOC_AI_SUMMARY_ROOT_BLOCK_ID') {
+          console.log('[FeishuExtractor] Skipping AI summary block (data-record-id):', recordId)
+          continue
+        }
+
+        // Also check for AI summary related classes
         const classList = el.className || ''
-        const aiSummaryClasses = [
-          'docx-ai-summary-block-inner',
-          'docx-ai-summary-block-inner-v2',
-          'docx-ai-summary-block-inner-v2-isFold',
-          'fold',
+        if (classList.includes('docx-ai-summary-block')) {
+          console.log('[FeishuExtractor] Skipping AI summary block (class):', el.className)
+          continue
+        }
+
+        // Check descendants for AI summary classes
+        const aiSummarySelectors = [
+          '.docx-ai-summary-block-inner',
+          '.docx-ai-summary-block-inner-v2',
+          '.docx-ai-summary-block-inner-v2-isFold',
         ]
-        if (aiSummaryClasses.some(cls => classList.includes(cls))) {
-          console.log('[FeishuExtractor] Skipping AI summary block:', el.className)
+
+        let hasAISummaryChild = false
+        for (const selector of aiSummarySelectors) {
+          if (el.querySelector && el.querySelector(selector)) {
+            hasAISummaryChild = true
+            break
+          }
+        }
+
+        if (hasAISummaryChild) {
+          console.log('[FeishuExtractor] Skipping block with AI summary child')
           continue
         }
 
