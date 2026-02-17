@@ -13,6 +13,7 @@ import type {
 } from '../../../types'
 import { createLogger } from '../../lib/logger'
 import type { RuntimeInterface } from '../../runtime/extension'
+import { processHtml, csdnPreset } from '../../lib/html-processor'
 
 // CSDN Configuration
 const CSDN_CONFIG = {
@@ -404,7 +405,7 @@ export class CSDNAdapter extends BaseAdapter {
       const payload = {
         title: article.title,
         markdowncontent: article.markdown,
-        content: article.html || '',
+        content: article.html ? processHtml(article.html, csdnPreset) : '',
         description: article.summary || this.extractPlainText(article.markdown, 200),
         readType: 'private', // Keep as private/draft, not public
         tags,
