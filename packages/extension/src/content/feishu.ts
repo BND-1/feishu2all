@@ -359,7 +359,44 @@ function createTurndownService(): TurndownService {
     linkStyle: 'inlined',
   })
 
-  // IMPORTANT: Add custom image rule FIRST to override default behavior
+  // IMPORTANT: Add custom rules FIRST to override default behavior
+
+  // Custom rule for Feishu headings (div.heading-h1, div.heading-h2, etc.)
+  turndownService.addRule('feishuHeadings', {
+    filter: function (node) {
+      if (node.nodeName !== 'DIV') return false
+      const className = (node as HTMLElement).className || ''
+      return /heading-h[1-6]/.test(className)
+    },
+    replacement: function (content, node) {
+      const className = (node as HTMLElement).className || ''
+      const match = className.match(/heading-h([1-6])/)
+      if (!match) return content
+
+      const level = parseInt(match[1])
+      const hashes = '#'.repeat(level)
+      return '\n\n' + hashes + ' ' + content.trim() + '\n\n'
+    },
+  })
+
+  // Custom rule for Feishu heading blocks (data-block-type="heading1", etc.)
+  turndownService.addRule('feishuHeadingBlocks', {
+    filter: function (node) {
+      if (node.nodeName !== 'DIV') return false
+      const blockType = (node as HTMLElement).getAttribute('data-block-type') || ''
+      return /^heading[1-9]$/.test(blockType)
+    },
+    replacement: function (content, node) {
+      const blockType = (node as HTMLElement).getAttribute('data-block-type') || ''
+      const match = blockType.match(/heading([1-9])/)
+      if (!match) return content
+
+      const level = parseInt(match[1])
+      const hashes = '#'.repeat(Math.min(level, 6)) // Max 6 levels
+      return '\n\n' + hashes + ' ' + content.trim() + '\n\n'
+    },
+  })
+
   // Custom rule for images to decode HTML entities in URLs
   turndownService.addRule('images', {
     filter: 'img',
