@@ -209,11 +209,29 @@ export class ZhihuAdapter extends BaseAdapter {
   /**
    * Upload image to Zhihu via URL fetch
    */
+  /**
+   * Upload image to Zhihu
+   * Uses binary upload for authenticated CDN images (like Feishu)
+   */
   async uploadImage(url: string, blob: Blob): Promise<ImageUploadResult> {
     await this.setupHeaderRules()
     try {
-      this.logger.debug(`Uploading image to Zhihu: ${url}`)
+      this.logger.info(`Uploading image to Zhihu: ${url.substring(0, 80)}`)
 
+      // If blob is provided and not empty, use binary upload
+      // This is necessary for images from authenticated CDNs (like Feishu)
+      if (blob && blob.size > 0) {
+        this.logger.info(`Using binary upload (blob size: ${blob.size})`)
+        const imageUrl = await this.uploadImageBinary(blob)
+        return {
+          url: imageUrl,
+          originalUrl: url,
+          success: true,
+        }
+      }
+
+      // Fallback to URL upload for public images
+      this.logger.info('Using URL upload (public image)')
       const headers = await this.zhihuHeaders({ 'x-requested-with': 'fetch' })
       const response = await this.postForm<ZhihuImageUploadResponse>(
         `${ZHIHU_CONFIG.apiUrl}/uploaded_images`,
@@ -229,7 +247,7 @@ export class ZhihuAdapter extends BaseAdapter {
         throw new Error('No image URL returned from Zhihu')
       }
 
-      this.logger.debug(`Image uploaded to Zhihu: ${response.src}`)
+      this.logger.info(`Image uploaded successfully: ${response.src}`)
 
       return {
         url: response.src,
@@ -247,6 +265,141 @@ export class ZhihuAdapter extends BaseAdapter {
     } finally {
       await this.clearHeaderRules()
     }
+  }
+
+  /**
+   * Upload image using binary method (for authenticated CDN images)
+   * Based on Wechatsync implementation with OSS V1 signature
+   */
+  private async uploadImageBinary(blob: Blob): Promise<string> {
+    // 1. Calculate image hash (simple hash, not MD5)
+    const arrayBuffer = await blob.arrayBuffer()
+    const hashArray = Array.from(new Uint8Array(arrayBuffer))
+    const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+    const imageHash = hashHex.substring(0, 32)
+
+    this.logger.debug(`Image hash: ${imageHash}, size: ${blob.size}`)
+
+    // 2. Request upload token
+    const headers = await this.zhihuHeaders()
+    const tokenResponse = await this.postJson<any>(
+      'https://api.zhihu.com/images',
+      {
+        image_hash: imageHash,
+        source: 'article',
+      },
+      headers
+    )
+
+    this.logger.debug('Token response:', JSON.stringify(tokenResponse))
+
+    const uploadFile = tokenResponse.upload_file
+    const uploadToken = tokenResponse.upload_token
+
+    if (!uploadFile || !uploadToken) {
+      throw new Error('Failed to get upload token from Zhihu')
+    }
+
+    // 3. Check if image already exists
+    if (uploadFile.state === 1) {
+      this.logger.info('Image already exists on Zhihu')
+      const objectKey = uploadFile.object_key || uploadFile.image_id
+      return `https://pic4.zhimg.com/${objectKey}`
+    }
+
+    // 4. Upload to Zhihu OSS with proper signature
+    const objectKey = uploadFile.object_key
+    const contentType = blob.type || 'application/octet-stream'
+    const ossDate = new Date().toUTCString()
+    const ossUserAgent = 'aliyun-sdk-js/6.8.0'
+
+    // Build OSS headers (must be sorted alphabetically)
+    const ossHeaders: Record<string, string> = {
+      'x-oss-date': ossDate,
+      'x-oss-security-token': uploadToken.access_token,
+      'x-oss-user-agent': ossUserAgent,
+    }
+
+    const canonicalizedOSSHeaders = Object.keys(ossHeaders)
+      .sort()
+      .map(key => `${key}:${ossHeaders[key]}`)
+      .join('\n')
+
+    // CanonicalizedResource: /bucket/object-key
+    const bucket = 'zhihu-pics'
+    const canonicalizedResource = `/${bucket}/${objectKey}`
+
+    // Build string to sign (OSS V1 signature)
+    const stringToSign =
+      'PUT\n' +
+      '\n' +  // Content-MD5 (empty)
+      contentType + '\n' +
+      ossDate + '\n' +
+      canonicalizedOSSHeaders + '\n' +
+      canonicalizedResource
+
+    this.logger.debug('OSS stringToSign:', stringToSign)
+
+    // Calculate HMAC-SHA1 signature
+    const signature = await this.hmacSha1Base64(uploadToken.access_key, stringToSign)
+    const authorization = `OSS ${uploadToken.access_id}:${signature}`
+
+    this.logger.debug('OSS authorization:', authorization)
+
+    // Upload to OSS
+    const ossUrl = `${ZHIHU_CONFIG.ossUrl}/${objectKey}`
+    this.logger.info(`Uploading to OSS: ${ossUrl}`)
+
+    const uploadHeaders = {
+      'Content-Type': contentType,
+      'Date': ossDate,
+      'Authorization': authorization,
+      'x-oss-date': ossDate,
+      'x-oss-security-token': uploadToken.access_token,
+      'x-oss-user-agent': ossUserAgent,
+    }
+
+    const ossResponse = await this.runtime.fetch(ossUrl, {
+      method: 'PUT',
+      headers: uploadHeaders,
+      body: blob,
+    })
+
+    if (!ossResponse.ok) {
+      const errorText = await ossResponse.text()
+      this.logger.error(`OSS upload failed: ${ossResponse.status}`, errorText)
+      throw new Error(`OSS upload failed: ${ossResponse.status}`)
+    }
+
+    this.logger.info('OSS upload successful')
+
+    // 5. Return image URL
+    let finalObjectKey = objectKey
+    if (blob.type === 'image/gif') {
+      finalObjectKey = objectKey + '.gif'
+    }
+
+    return `https://pic4.zhimg.com/${finalObjectKey}`
+  }
+
+  /**
+   * Calculate HMAC-SHA1 signature and return base64
+   */
+  private async hmacSha1Base64(key: string, message: string): Promise<string> {
+    const encoder = new TextEncoder()
+    const keyData = encoder.encode(key)
+    const messageData = encoder.encode(message)
+
+    const cryptoKey = await crypto.subtle.importKey(
+      'raw',
+      keyData,
+      { name: 'HMAC', hash: 'SHA-1' },
+      false,
+      ['sign']
+    )
+
+    const signature = await crypto.subtle.sign('HMAC', cryptoKey, messageData)
+    return btoa(String.fromCharCode(...new Uint8Array(signature)))
   }
 
   /**
