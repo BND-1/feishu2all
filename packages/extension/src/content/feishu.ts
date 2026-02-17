@@ -535,6 +535,12 @@ async function collectAllContentBlocks(): Promise<DocumentFragment | null> {
           continue
         }
 
+        // Skip blocks with print-forbidden placeholders (attachments, restricted content)
+        if (el.querySelector && el.querySelector('.gpf-biz-action-manager-forbidden-placeholder')) {
+          console.log('[FeishuExtractor] Skipping block with forbidden placeholder (restricted content)')
+          continue
+        }
+
         const blockId = el.getAttribute('data-block-id')
         if (blockId && !collectedIds.has(blockId)) {
           fragment.appendChild(el.cloneNode(true))
