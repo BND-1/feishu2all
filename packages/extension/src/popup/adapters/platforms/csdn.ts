@@ -90,7 +90,12 @@ export class CSDNAdapter extends BaseAdapter {
    * Required for CSDN API and Huawei Cloud OBS CORS
    */
   private async setupHeaderRules(): Promise<void> {
-    if (this.headerRuleIds.length > 0) return
+    if (this.headerRuleIds.length > 0) {
+      this.logger.debug('Header rules already set up:', this.headerRuleIds)
+      return
+    }
+
+    this.logger.info('Setting up header rules for CSDN and Huawei OBS...')
 
     const editorHeaders = {
       'Origin': 'https://editor.csdn.net',
@@ -104,7 +109,7 @@ export class CSDNAdapter extends BaseAdapter {
     ])
 
     this.headerRuleIds = [r1, r2, r3]
-    this.logger.debug('Header rules added:', this.headerRuleIds)
+    this.logger.info('Header rules added successfully:', this.headerRuleIds)
   }
 
   /**

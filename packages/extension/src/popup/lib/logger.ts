@@ -10,9 +10,8 @@ class SimpleLogger implements Logger {
   constructor(private prefix = '[Feishu2All]') {}
 
   debug(message: string, ...args: any[]): void {
-    if (isDev) {
-      console.debug(`${this.prefix} DEBUG:`, message, ...args)
-    }
+    // Always show debug logs for now (debugging image upload issues)
+    console.debug(`${this.prefix} DEBUG:`, message, ...args)
   }
 
   info(message: string, ...args: any[]): void {

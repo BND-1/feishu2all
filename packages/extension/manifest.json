@@ -20,7 +20,8 @@
     "storage",
     "cookies",
     "tabs",
-    "declarativeNetRequest"
+    "declarativeNetRequest",
+    "declarativeNetRequestWithHostAccess"
   ],
   "host_permissions": [
     "https://*.feishu.cn/*",
@@ -28,6 +29,7 @@
     "https://*.zhihu.com/*",
     "https://*.weibo.cn/*",
     "https://*.huaweicloud.com/*",
+    "https://*.myhuaweicloud.com/*",
     "https://*.zhimg.com/*",
     "https://zhihu-pics-upload.zhimg.com/*"
   ],

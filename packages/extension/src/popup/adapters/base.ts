@@ -291,11 +291,16 @@ export abstract class BaseAdapter {
     article: Article,
     imageUrls: string[]
   ): Promise<ImageUploadResult[]> {
+    this.logger.info(`Starting to process ${imageUrls.length} images...`)
+    this.logger.info(`imageDataMap has ${Object.keys(article.imageDataMap || {}).length} entries`)
+
     const results: ImageUploadResult[] = []
     const uploadedMap = new Map<string, ImageUploadResult>()
     let processed = 0
 
     for (const url of imageUrls) {
+      this.logger.info(`Processing image ${processed + 1}/${imageUrls.length}: ${url.substring(0, 80)}`)
+
       try {
         // Skip if already a platform URL
         if (this.isPlatformUrl(url)) {
@@ -319,33 +324,52 @@ export abstract class BaseAdapter {
 
         // Debug: log imageDataMap keys
         if (!dataUri && article.imageDataMap) {
-          this.logger.debug(`Image URL not found in imageDataMap: ${url}`)
-          this.logger.debug(`Available keys in imageDataMap:`, Object.keys(article.imageDataMap))
+          this.logger.info(`Image URL not found in imageDataMap: ${url}`)
+          this.logger.info(`Available keys in imageDataMap:`, Object.keys(article.imageDataMap))
         }
 
         if (dataUri) {
           try {
             const resp = await fetch(dataUri)
             blob = await resp.blob()
-            this.logger.debug(`Using pre-downloaded image for: ${url.substring(0, 60)}...`)
+            this.logger.info(`Using pre-downloaded image (${blob.size} bytes) for: ${url.substring(0, 60)}...`)
           } catch (e) {
             this.logger.warn(`Failed to decode pre-downloaded image, trying direct download: ${url}`)
           }
         }
         if (blob.size === 0) {
           try {
+            this.logger.info(`Attempting direct download for: ${url.substring(0, 60)}...`)
             const response = await this.runtime.fetch(url, { credentials: 'include' })
             if (response.ok) {
               blob = await response.blob()
+              this.logger.info(`Direct download successful, blob size: ${blob.size}`)
             } else {
-              this.logger.warn(`Failed to download image (${response.status}), trying upload with URL only: ${url}`)
+              this.logger.warn(`Failed to download image (${response.status}): ${url}`)
             }
           } catch (dlError) {
-            this.logger.warn(`Image download error, trying upload with URL only: ${url}`, dlError)
+            this.logger.warn(`Image download error: ${url}`, dlError)
           }
         }
 
+        // If blob is still empty, skip this image
+        if (blob.size === 0) {
+          this.logger.error(`Cannot upload image - no data available: ${url}`)
+          results.push({
+            url,
+            originalUrl: url,
+            success: false,
+            error: 'Image download failed - no data available. This may be due to authentication requirements or CORS restrictions.',
+          })
+          processed++
+          this.imageProgress(processed, imageUrls.length)
+          continue
+        }
+
+        this.logger.info(`Uploading image (${blob.size} bytes): ${url.substring(0, 60)}...`)
+
         const result = await this.uploadImage(url, blob)
+        this.logger.info(`Upload result: ${result.success ? 'SUCCESS' : 'FAILED'} - ${url.substring(0, 60)}`)
         results.push(result)
         uploadedMap.set(url, result)
 
@@ -406,8 +430,21 @@ export abstract class BaseAdapter {
       // Extract image URLs from both HTML and Markdown, merge and deduplicate
       const htmlImageUrls = article.html ? this.extractImageUrlsFromHtml(article.html) : []
       const mdImageUrls = this.extractImageUrlsFromMarkdown(article.markdown)
-      const imageUrls = [...new Set([...htmlImageUrls, ...mdImageUrls])]
+
+      // Decode HTML entities in all URLs to ensure consistency
+      const decodeUrl = (url: string) => url
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+
+      const decodedHtmlUrls = htmlImageUrls.map(decodeUrl)
+      const decodedMdUrls = mdImageUrls.map(decodeUrl)
+
+      const imageUrls = [...new Set([...decodedHtmlUrls, ...decodedMdUrls])]
       this.logger.info(`Found ${imageUrls.length} images to process (${htmlImageUrls.length} from HTML, ${mdImageUrls.length} from markdown)`)
+      this.logger.info(`Sample URLs:`, imageUrls.slice(0, 2))
 
       let finalMarkdown = article.markdown
       let finalHtml = article.html

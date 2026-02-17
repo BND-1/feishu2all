@@ -307,27 +307,42 @@ async function downloadImages(imageUrls: string[]): Promise<Record<string, strin
     try {
       console.log(`[FeishuExtractor] Downloading: ${imgUrl}`)
       const resp = await fetch(imgUrl, { credentials: 'include' })
-      if (resp.ok) {
-        const blob = await resp.blob()
-        const dataUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader()
-          reader.onload = () => resolve(reader.result as string)
-          reader.onerror = () => reject(new Error('FileReader error'))
-          reader.readAsDataURL(blob)
-        })
 
-        imageDataMap[imgUrl] = dataUrl
-        console.log(`[FeishuExtractor] Downloaded successfully: ${imgUrl.substring(0, 80)}...`)
-      } else {
-        console.warn(`[FeishuExtractor] Download failed (${resp.status}): ${imgUrl}`)
+      if (!resp.ok) {
+        console.error(`[FeishuExtractor] Download failed (${resp.status} ${resp.statusText}): ${imgUrl}`)
+        continue
       }
+
+      const blob = await resp.blob()
+
+      if (blob.size === 0) {
+        console.error(`[FeishuExtractor] Downloaded blob is empty: ${imgUrl}`)
+        continue
+      }
+
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result as string)
+        reader.onerror = () => reject(new Error('FileReader error'))
+        reader.readAsDataURL(blob)
+      })
+
+      imageDataMap[imgUrl] = dataUrl
+      console.log(`[FeishuExtractor] Downloaded successfully (${blob.size} bytes, ${blob.type}): ${imgUrl.substring(0, 80)}...`)
     } catch (err) {
-      console.warn(`[FeishuExtractor] Download error: ${imgUrl}`, err)
+      console.error(`[FeishuExtractor] Download error: ${imgUrl}`, err)
     }
   }
 
   console.log(`[FeishuExtractor] Downloaded ${Object.keys(imageDataMap).length}/${imageUrls.length} images`)
   console.log(`[FeishuExtractor] imageDataMap keys:`, Object.keys(imageDataMap))
+
+  // Log failed downloads
+  const failed = imageUrls.filter(url => !imageDataMap[url])
+  if (failed.length > 0) {
+    console.warn(`[FeishuExtractor] Failed to download ${failed.length} images:`, failed)
+  }
+
   return imageDataMap
 }
 
@@ -344,6 +359,7 @@ function createTurndownService(): TurndownService {
     linkStyle: 'inlined',
   })
 
+  // IMPORTANT: Add custom image rule FIRST to override default behavior
   // Custom rule for images to decode HTML entities in URLs
   turndownService.addRule('images', {
     filter: 'img',
