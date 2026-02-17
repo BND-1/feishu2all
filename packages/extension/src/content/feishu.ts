@@ -456,7 +456,27 @@ async function collectAllContentBlocks(): Promise<DocumentFragment | null> {
   console.log('[FeishuExtractor] Collecting all content blocks...')
 
   const scrollContainer = document.querySelector('.bear-web-x-container') as HTMLElement
-  const contentContainer = document.querySelector('.render-unit-wrapper') as HTMLElement
+
+  // Find the correct render-unit-wrapper (not inside AI summary block)
+  const allWrappers = document.querySelectorAll('.render-unit-wrapper')
+  let contentContainer: HTMLElement | null = null
+
+  for (const wrapper of Array.from(allWrappers)) {
+    // Skip if inside AI summary block
+    if (wrapper.closest('.docx-ai-summary-block')) {
+      console.log('[FeishuExtractor] Skipping render-unit-wrapper inside AI summary')
+      continue
+    }
+    // Skip if inside back-ref list
+    if (wrapper.closest('.docx-back_ref_list-block')) {
+      console.log('[FeishuExtractor] Skipping render-unit-wrapper inside back-ref list')
+      continue
+    }
+    // This should be the main content wrapper
+    contentContainer = wrapper as HTMLElement
+    console.log('[FeishuExtractor] Found main content render-unit-wrapper')
+    break
+  }
 
   if (!scrollContainer || !contentContainer) {
     console.warn('[FeishuExtractor] Could not find Feishu containers')
