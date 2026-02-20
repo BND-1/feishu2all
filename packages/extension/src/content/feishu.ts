@@ -1,13 +1,11 @@
 /**
- * Feishu Content Extractor (Hybrid: SSR + DOM fallback)
+ * Feishu Content Extractor (DOM-based)
  * Extracts article content from Feishu (Lark) wiki/docs/docx pages
  *
  * Strategy:
- * 1. Try SSR data (window.DATA) - complete content, works with virtual scrolling
- * 2. Fallback to DOM extraction - may be incomplete due to virtual scrolling
+ * - Direct DOM extraction with virtual scrolling support
+ * - Collects all content blocks by scrolling and observing DOM changes
  */
-
-import TurndownService from 'turndown'
 
 // Types for internal use
 interface Article {
@@ -24,43 +22,6 @@ interface Article {
   imageDataMap?: Record<string, string>
 }
 
-// Feishu SSR data structure
-interface FeishuBlock {
-  id: string
-  version: number
-  data: {
-    type: string
-    text?: {
-      initialAttributedTexts?: {
-        text?: Record<string, string>
-      }
-    }
-    image?: {
-      token?: string
-      url?: string
-    }
-    code?: {
-      language?: string
-      text?: string
-    }
-    [key: string]: any
-  }
-}
-
-interface FeishuSSRData {
-  clientVars?: {
-    data?: {
-      block_map?: Record<string, FeishuBlock>
-      block_sequence?: string[]
-      [key: string]: any
-    }
-  }
-  meta?: {
-    title?: string
-    [key: string]: any
-  }
-}
-
 // Feishu URL patterns
 const FEISHU_PATTERNS = [
   /https:\/\/[^.]+\.feishu\.cn\/wiki\//,
@@ -74,149 +35,6 @@ const FEISHU_PATTERNS = [
 function isFeishuPage(): boolean {
   const url = window.location.href
   return FEISHU_PATTERNS.some((pattern) => pattern.test(url))
-}
-
-/**
- * Get Feishu SSR data from window.DATA
- */
-function getFeishuSSRData(): FeishuSSRData | null {
-  try {
-    const windowData = (window as any).DATA
-    if (!windowData) {
-      console.log('[FeishuExtractor] window.DATA not found')
-      return null
-    }
-
-    console.log('[FeishuExtractor] Found window.DATA')
-    return windowData as FeishuSSRData
-  } catch (error) {
-    console.error('[FeishuExtractor] Failed to get SSR data:', error)
-    return null
-  }
-}
-
-/**
- * Convert Feishu block to HTML
- */
-function blockToHtml(block: FeishuBlock): string {
-  const type = block.data.type
-
-  // Text blocks
-  if (type === 'text' || type === 'paragraph') {
-    const text = block.data.text?.initialAttributedTexts?.text?.['0'] || ''
-    return `<p>${text}</p>`
-  }
-
-  // Headings
-  if (type.startsWith('heading')) {
-    const level = type.replace('heading', '')
-    const text = block.data.text?.initialAttributedTexts?.text?.['0'] || ''
-    return `<h${level}>${text}</h${level}>`
-  }
-
-  // Images
-  if (type === 'image') {
-    const url = block.data.image?.url || ''
-    if (url) {
-      return `<img src="${url}" />`
-    }
-  }
-
-  // Code blocks
-  if (type === 'code') {
-    const code = block.data.code?.text || ''
-    const lang = block.data.code?.language || ''
-    return `<pre><code class="language-${lang}">${code}</code></pre>`
-  }
-
-  // Lists
-  if (type === 'bullet' || type === 'ordered') {
-    const text = block.data.text?.initialAttributedTexts?.text?.['0'] || ''
-    return `<li>${text}</li>`
-  }
-
-  // Fallback: extract any text
-  const text = block.data.text?.initialAttributedTexts?.text?.['0'] || ''
-  if (text) {
-    return `<p>${text}</p>`
-  }
-
-  return ''
-}
-
-/**
- * Extract article from SSR data
- */
-async function extractFromSSR(ssrData: FeishuSSRData): Promise<Article | null> {
-  try {
-    console.log('[FeishuExtractor] Extracting from SSR data...')
-
-    const title = ssrData.meta?.title || 'Untitled Document'
-    const blockMap = ssrData.clientVars?.data?.block_map
-    const blockSequence = ssrData.clientVars?.data?.block_sequence
-
-    if (!blockMap) {
-      console.warn('[FeishuExtractor] No block_map found')
-      return null
-    }
-
-    console.log('[FeishuExtractor] Found', Object.keys(blockMap).length, 'blocks')
-
-    // Get ordered blocks
-    let orderedBlocks: FeishuBlock[]
-    if (blockSequence && Array.isArray(blockSequence)) {
-      orderedBlocks = blockSequence
-        .slice(1) // Skip document root
-        .map((id: string) => blockMap[id])
-        .filter((block: FeishuBlock) => block != null)
-    } else {
-      orderedBlocks = Object.values(blockMap)
-    }
-
-    // Convert blocks to HTML
-    const htmlParts: string[] = []
-    const imageUrls: string[] = []
-
-    for (const block of orderedBlocks) {
-      const html = blockToHtml(block)
-      if (html) {
-        htmlParts.push(html)
-
-        // Extract image URLs
-        if (block.data.type === 'image' && block.data.image?.url) {
-          const url = decodeHtmlEntities(block.data.image.url)
-          if (!imageUrls.includes(url)) {
-            imageUrls.push(url)
-          }
-        }
-      }
-    }
-
-    const html = htmlParts.join('\n')
-    console.log('[FeishuExtractor] Generated HTML length:', html.length)
-    console.log('[FeishuExtractor] Found', imageUrls.length, 'images')
-
-    // Convert to Markdown
-    const markdown = htmlToMarkdown(html)
-
-    // Download images
-    const imageDataMap = await downloadImages(imageUrls)
-
-    return {
-      title,
-      markdown,
-      html,
-      source: {
-        url: window.location.href,
-        platform: 'feishu',
-      },
-      images: imageUrls.length > 0 ? imageUrls : undefined,
-      imageDataMap: Object.keys(imageDataMap).length > 0 ? imageDataMap : undefined,
-    }
-  } catch (error) {
-    console.error('[FeishuExtractor] SSR extraction failed:', error)
-    return null
-  }
 }
 
 /**
@@ -347,90 +165,164 @@ async function downloadImages(imageUrls: string[]): Promise<Record<string, strin
 }
 
 /**
- * Create Turndown service for HTML to Markdown conversion
+ * Preprocess HTML to normalize Feishu-specific structures
+ * Converts Feishu's custom block types to standard HTML tags
  */
-function createTurndownService(): TurndownService {
-  const turndownService = new TurndownService({
-    headingStyle: 'atx',
-    codeBlockStyle: 'fenced',
-    fence: '```',
-    emDelimiter: '*',
-    strongDelimiter: '**',
-    linkStyle: 'inlined',
-  })
+function preprocessFeishuHtml(html: string): string {
+  let result = html
 
-  // IMPORTANT: Add custom rules FIRST to override default behavior
+  // Convert Feishu heading blocks to standard HTML headings
+  // <div data-block-type="heading1">text</div> → <h1>text</h1>
+  for (let level = 1; level <= 9; level++) {
+    const regex = new RegExp(
+      `<div([^>]*data-block-type=["']heading${level}["'][^>]*)>([\\s\\S]*?)</div>`,
+      'gi'
+    )
+    const headingLevel = Math.min(level, 6) // Markdown only supports h1-h6
 
-  // Custom rule for Feishu heading blocks (data-block-type="heading1", etc.)
-  // Feishu uses <div data-block-type="heading1"> instead of standard <h1> tags
-  // This rule converts them to Markdown headings (# ## ### etc.)
-  turndownService.addRule('feishuHeadingBlocks', {
-    filter: function (node) {
-      if (node.nodeName !== 'DIV') return false
-      const blockType = (node as HTMLElement).getAttribute('data-block-type') || ''
-      return /^heading[1-9]$/.test(blockType)
-    },
-    replacement: function (content, node) {
-      const blockType = (node as HTMLElement).getAttribute('data-block-type') || ''
-      const match = blockType.match(/heading([1-9])/)
-      if (!match) return content
+    // Use function replacement to trim whitespace from captured content
+    result = result.replace(regex, (match, attrs, content) => {
+      const trimmedContent = content.trim()
+      return `<h${headingLevel}>${trimmedContent}</h${headingLevel}>`
+    })
+  }
 
-      const level = parseInt(match[1])
-      const hashes = '#'.repeat(Math.min(level, 6)) // Max 6 levels (Markdown standard)
+  // Remove HTML comments
+  result = result.replace(/<!--[\s\S]*?-->/g, '')
 
-      return '\n\n' + hashes + ' ' + content.trim() + '\n\n'
-    },
-  })
+  // Remove data-* attributes (Feishu-specific metadata)
+  result = result.replace(/\s*data-[\w-]+=(["'])[^"']*\1/gi, '')
 
-  // Custom rule for images to decode HTML entities in URLs
-  turndownService.addRule('images', {
-    filter: 'img',
-    replacement: function (content, node) {
-      const alt = (node as HTMLImageElement).alt || ''
-      let src = (node as HTMLImageElement).getAttribute('src') || ''
+  // Remove empty paragraphs and divs
+  result = result.replace(/<(p|div)[^>]*>\s*<\/\1>/gi, '')
 
-      // Decode HTML entities in URL
-      src = decodeHtmlEntities(src)
+  // Remove trailing <br> tags before closing tags
+  result = result.replace(/(<br\s*\/?>)+(<\/(p|div|section)>)/gi, '$2')
 
-      return src ? '![' + alt + '](' + src + ')' : ''
-    },
-  })
+  // Collapse multiple newlines
+  result = result.replace(/\n{3,}/g, '\n\n')
 
-  // Add table support
-  turndownService.addRule('table', {
-    filter: 'table',
-    replacement: function (content) {
-      return '\n\n' + content + '\n\n'
-    },
-  })
-
-  turndownService.addRule('tableRow', {
-    filter: 'tr',
-    replacement: function (content, node) {
-      return content + '\n'
-    },
-  })
-
-  turndownService.addRule('tableCell', {
-    filter: ['th', 'td'],
-    replacement: function (content, node) {
-      const parent = node.parentNode as HTMLElement
-      const siblings = parent.querySelectorAll('th, td')
-      const index = Array.from(siblings).indexOf(node as HTMLElement)
-      const prefix = index === 0 ? '| ' : ' '
-      return prefix + content + ' |'
-    },
-  })
-
-  return turndownService
+  return result
 }
 
 /**
- * Convert HTML to Markdown using Turndown
+ * Convert HTML to Markdown using custom regex-based converter
+ * Based on Wechatsync's implementation to avoid Turndown's aggressive escaping
  */
 function htmlToMarkdown(html: string): string {
-  const turndownService = createTurndownService()
-  return turndownService.turndown(html)
+  // Preprocess HTML to normalize Feishu-specific structures
+  const preprocessedHtml = preprocessFeishuHtml(html)
+
+  let md = preprocessedHtml
+
+  // Remove div/br tags inside headings (Feishu sometimes wraps heading text in divs)
+  md = md.replace(/<(h[1-6][^>]*)>([\s\S]*?)<\/h[1-6]>/gi, (match, openTag, content) => {
+    // Remove div and br tags inside heading, keep text only
+    const cleanContent = content
+      .replace(/<div[^>]*>/gi, '')
+      .replace(/<\/div>/gi, '')
+      .replace(/<br\s*\/?>/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+    return `<${openTag}>${cleanContent}</h${openTag.match(/h([1-6])/)?.[1] || '2'}>`
+  })
+
+  // Headings
+  md = md.replace(/<h1[^>]*>([\s\S]*?)<\/h1>/gi, '\n# $1\n')
+  md = md.replace(/<h2[^>]*>([\s\S]*?)<\/h2>/gi, '\n## $1\n')
+  md = md.replace(/<h3[^>]*>([\s\S]*?)<\/h3>/gi, '\n### $1\n')
+  md = md.replace(/<h4[^>]*>([\s\S]*?)<\/h4>/gi, '\n#### $1\n')
+  md = md.replace(/<h5[^>]*>([\s\S]*?)<\/h5>/gi, '\n##### $1\n')
+  md = md.replace(/<h6[^>]*>([\s\S]*?)<\/h6>/gi, '\n###### $1\n')
+
+  // Bold and italic
+  md = md.replace(/<(strong|b)[^>]*>([\s\S]*?)<\/\1>/gi, '**$2**')
+  md = md.replace(/<(em|i)[^>]*>([\s\S]*?)<\/\1>/gi, '*$2*')
+
+  // Links
+  md = md.replace(/<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, '[$2]($1)')
+
+  // Images
+  md = md.replace(/<img[^>]*src="([^"]*)"[^>]*alt="([^"]*)"[^>]*\/?>/gi, '![$2]($1)')
+  md = md.replace(/<img[^>]*src="([^"]*)"[^>]*\/?>/gi, '![]($1)')
+
+  // Code blocks
+  md = md.replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, (match, content) => {
+    let language = ''
+
+    // Extract language from pre tag
+    const preLangMatch = match.match(/<pre[^>]*data-lang(?:uage)?=["'](\w+)["']/)
+    const preClassMatch = match.match(/<pre[^>]*class="([^"]*)"/)
+    if (preLangMatch) {
+      language = preLangMatch[1]
+    } else if (preClassMatch) {
+      const langMatch = preClassMatch[1].match(/(?:language-|lang-)(\w+)/)
+      if (langMatch) language = langMatch[1]
+    }
+
+    // Extract language from code tag
+    const codeLangMatch = content.match(/<code[^>]*data-lang(?:uage)?=["'](\w+)["']/)
+    const codeClassMatch = content.match(/<code[^>]*class="([^"]*)"/)
+    if (!language) {
+      if (codeLangMatch) {
+        language = codeLangMatch[1]
+      } else if (codeClassMatch) {
+        const langMatch = codeClassMatch[1].match(/(?:language-|lang-)(\w+)/)
+        if (langMatch) language = langMatch[1]
+      }
+    }
+
+    // Extract text content
+    let text = content
+      .replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, '$1')
+      .replace(/<[^>]+>/g, '')
+
+    // Decode HTML entities
+    text = text
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&amp;/g, '&')
+      .replace(/&quot;/g, '"')
+      .replace(/&#039;/g, "'")
+
+    return '\n```' + language + '\n' + text.trim() + '\n```\n'
+  })
+
+  // Inline code
+  md = md.replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, '`$1`')
+
+  // Lists
+  md = md.replace(/<ul[^>]*>([\s\S]*?)<\/ul>/gi, '$1\n')
+  md = md.replace(/<ol[^>]*>([\s\S]*?)<\/ol>/gi, '$1\n')
+  md = md.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, '- $1\n')
+
+  // Paragraphs and line breaks
+  md = md.replace(/<p[^>]*>([\s\S]*?)<\/p>/gi, '\n$1\n')
+  md = md.replace(/<div[^>]*>([\s\S]*?)<\/div>/gi, '\n$1\n')  // Feishu uses div for paragraphs
+  md = md.replace(/<br\s*\/?>/gi, '\n')
+  md = md.replace(/<hr\s*\/?>/gi, '\n---\n')
+
+  // Blockquotes
+  md = md.replace(/<blockquote[^>]*>([\s\S]*?)<\/blockquote>/gi, (_, content) => {
+    return '\n' + content.trim().split('\n').map((line: string) => '> ' + line).join('\n') + '\n'
+  })
+
+  // Remove other tags
+  md = md.replace(/<\/?[^>]+(>|$)/g, '')
+
+  // Decode HTML entities
+  md = md.replace(/&amp;/g, '&')
+  md = md.replace(/&lt;/g, '<')
+  md = md.replace(/&gt;/g, '>')
+  md = md.replace(/&quot;/g, '"')
+  md = md.replace(/&#039;/g, "'")
+  md = md.replace(/&nbsp;/g, ' ')
+
+  // Clean up extra blank lines
+  md = md.replace(/\n{3,}/g, '\n\n')
+  md = md.trim()
+
+  return md
 }
 
 /**
@@ -697,30 +589,18 @@ async function scrollToLoadAllContent(): Promise<void> {
 }
 
 /**
- * Extract article from Feishu page (hybrid approach)
+ * Extract article from Feishu page (DOM-based)
  */
 async function extractFeishuArticle(): Promise<Article | null> {
   try {
-    console.log('[FeishuExtractor] Starting extraction...')
+    console.log('[FeishuExtractor] Starting DOM-based extraction...')
 
     if (!isFeishuPage()) {
       console.warn('[FeishuExtractor] Not a Feishu page')
       return null
     }
 
-    // Try SSR extraction first (works with virtual scrolling)
-    const ssrData = getFeishuSSRData()
-    if (ssrData) {
-      console.log('[FeishuExtractor] Using SSR extraction (complete content)')
-      const article = await extractFromSSR(ssrData)
-      if (article) {
-        return article
-      }
-    }
-
-    // Fallback to DOM extraction (may be incomplete due to virtual scrolling)
-    console.warn('[FeishuExtractor] SSR extraction failed, falling back to DOM extraction')
-    console.warn('[FeishuExtractor] WARNING: Content may be incomplete due to virtual scrolling')
+    // Use DOM extraction
     return await extractFromDOM()
   } catch (error) {
     console.error('[FeishuExtractor] Extraction failed:', error)
