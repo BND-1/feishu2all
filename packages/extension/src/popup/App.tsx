@@ -93,8 +93,8 @@ function App() {
         type: 'SCROLL_TO_TOP',
       })
 
-      // Wait a bit for scroll to complete
-      await new Promise(resolve => setTimeout(resolve, 300))
+      // Wait for DOM to render after scroll (increased for dynamic content)
+      await new Promise(resolve => setTimeout(resolve, 800))
 
       const response = await runtime.sendMessage<{ article: Article | null; error?: string }>({
         type: 'EXTRACT_ARTICLE',

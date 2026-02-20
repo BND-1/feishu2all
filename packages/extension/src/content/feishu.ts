@@ -757,7 +757,8 @@ function initializeContentScript() {
     // Handle scroll to top
     if (message.type === 'SCROLL_TO_TOP') {
       console.log('[FeishuExtractor] Scrolling to top...')
-      window.scrollTo({ top: 0, behavior: 'smooth' })
+      // Use instant scroll for dynamic content rendering
+      window.scrollTo({ top: 0, behavior: 'instant' })
       sendResponse({ success: true })
       return true
     }
