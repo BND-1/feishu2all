@@ -757,11 +757,13 @@ function initializeContentScript() {
     // Handle scroll to top
     if (message.type === 'SCROLL_TO_TOP') {
       console.log('[FeishuExtractor] Scrolling to top...')
-      // Immediately scroll to top (no animation)
+      // Feishu uses .bear-web-x-container as the actual scroll container
+      const scrollContainer = document.querySelector('.bear-web-x-container') as HTMLElement
+      if (scrollContainer) {
+        scrollContainer.scrollTop = 0
+        console.log('[FeishuExtractor] Scrolled container to top, scrollTop:', scrollContainer.scrollTop)
+      }
       window.scrollTo(0, 0)
-      document.documentElement.scrollTop = 0
-      document.body.scrollTop = 0
-      console.log('[FeishuExtractor] Scrolled to top, current scrollY:', window.scrollY)
       sendResponse({ success: true })
       return true
     }
