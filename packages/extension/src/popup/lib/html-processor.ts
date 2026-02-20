@@ -13,6 +13,8 @@ export interface HtmlProcessOptions {
   removeIframes?: boolean
   /** Remove SVG images (<img src="*.svg">) */
   removeSvgImages?: boolean
+  /** Convert Feishu heading divs to standard h1-h6 tags */
+  convertFeishuHeadings?: boolean
   /** Remove all data-* attributes */
   removeDataAttributes?: boolean
   /** Remove all style attributes */
@@ -57,6 +59,9 @@ export function processHtml(html: string, options: HtmlProcessOptions = {}): str
     }
     if (options.removeIframes) {
       result = removeIframes(result)
+    }
+    if (options.convertFeishuHeadings) {
+      result = convertFeishuHeadings(result)
     }
     if (options.removeSvgImages) {
       result = removeSvgImages(result)
@@ -105,6 +110,31 @@ export function processHtml(html: string, options: HtmlProcessOptions = {}): str
 }
 
 // ============ Transform functions ============
+
+/**
+ * Convert Feishu heading divs to standard HTML headings
+ * <div data-block-type="heading3">text</div> → <h3>text</h3>
+ */
+function convertFeishuHeadings(html: string): string {
+  let result = html
+  for (let level = 1; level <= 9; level++) {
+    const headingLevel = Math.min(level, 6)
+    const regex = new RegExp(
+      `<div([^>]*data-block-type=["']heading${level}["'][^>]*)>([\\s\\S]*?)</div>`,
+      'gi'
+    )
+    result = result.replace(regex, (_match, _attrs, content) => {
+      const trimmed = content
+        .replace(/<div[^>]*>/gi, '')
+        .replace(/<\/div>/gi, '')
+        .replace(/<br\s*\/?>/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+      return `<h${headingLevel}>${trimmed}</h${headingLevel}>`
+    })
+  }
+  return result
+}
 
 function removeScripts(html: string): string {
   return html
@@ -234,6 +264,7 @@ export const zhihuPreset: HtmlProcessOptions = {
   removeComments: true,
   removeIframes: true,
   removeSvgImages: true,
+  convertFeishuHeadings: true,
   removeDataAttributes: true,
   convertSectionToDiv: true,
   removeEmptyLines: true,
@@ -249,5 +280,6 @@ export const csdnPreset: HtmlProcessOptions = {
   removeScripts: true,
   removeComments: true,
   removeIframes: true,
+  convertFeishuHeadings: true,
   processLazyImages: true,
 }
