@@ -234,19 +234,19 @@ function App() {
       logger.info('Caching article for URL:', url)
       logger.info('Article title:', article.title)
 
+      // Exclude imageDataMap from cache (too large, base64 images)
+      // Images will be re-downloaded on next extraction if needed
+      const { imageDataMap, ...articleWithoutImages } = article
+
       await runtime.setStorage({
         cachedArticle: {
           url,
-          article,
+          article: articleWithoutImages,
           timestamp: Date.now(),
         },
       })
 
       logger.info('Article cached successfully')
-
-      // Verify the cache was saved
-      const verify = await runtime.getStorage('cachedArticle')
-      logger.info('Verification - cached URL:', verify?.cachedArticle?.url)
     } catch (error) {
       logger.error('Failed to cache article:', error)
     }
