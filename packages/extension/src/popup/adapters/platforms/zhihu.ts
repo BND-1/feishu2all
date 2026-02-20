@@ -450,7 +450,7 @@ export class ZhihuAdapter extends BaseAdapter {
         headers
       )
 
-      const draftUrl = `https://zhuanlan.zhihu.com/p/${draftId}`
+      const draftUrl = `https://zhuanlan.zhihu.com/p/${draftId}/edit`
 
       this.logger.info(`Draft created: ${draftId}`)
 
