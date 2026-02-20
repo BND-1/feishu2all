@@ -14,6 +14,7 @@ import type {
 import { createLogger } from '../../lib/logger'
 import type { RuntimeInterface } from '../../runtime/extension'
 import { processHtml, zhihuPreset } from '../../lib/html-processor'
+import md5 from 'js-md5'
 
 // Zhihu Configuration
 const ZHIHU_CONFIG = {
@@ -272,13 +273,11 @@ export class ZhihuAdapter extends BaseAdapter {
    * Based on Wechatsync implementation with OSS V1 signature
    */
   private async uploadImageBinary(blob: Blob): Promise<string> {
-    // 1. Calculate image hash (simple hash, not MD5)
+    // 1. Calculate MD5 hash of the image
     const arrayBuffer = await blob.arrayBuffer()
-    const hashArray = Array.from(new Uint8Array(arrayBuffer))
-    const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
-    const imageHash = hashHex.substring(0, 32)
+    const imageHash = md5(arrayBuffer)
 
-    this.logger.debug(`Image hash: ${imageHash}, size: ${blob.size}`)
+    this.logger.debug(`Image MD5 hash: ${imageHash}, size: ${blob.size}`)
 
     // 2. Request upload token
     const headers = await this.zhihuHeaders()
@@ -350,6 +349,12 @@ export class ZhihuAdapter extends BaseAdapter {
     const ossUrl = `${ZHIHU_CONFIG.ossUrl}/${objectKey}`
     this.logger.info(`Uploading to OSS: ${ossUrl}`)
 
+    // Add header rule for OSS CORS
+    const ossRuleId = await this.runtime.addHeaderRule(
+      '*://zhihu-pics-upload.zhimg.com/*',
+      { 'Origin': 'https://zhuanlan.zhihu.com', 'Referer': 'https://zhuanlan.zhihu.com/' }
+    )
+
     const uploadHeaders = {
       'Content-Type': contentType,
       'Date': ossDate,
@@ -359,19 +364,23 @@ export class ZhihuAdapter extends BaseAdapter {
       'x-oss-user-agent': ossUserAgent,
     }
 
-    const ossResponse = await this.runtime.fetch(ossUrl, {
-      method: 'PUT',
-      headers: uploadHeaders,
-      body: blob,
-    })
+    try {
+      const ossResponse = await this.runtime.fetch(ossUrl, {
+        method: 'PUT',
+        headers: uploadHeaders,
+        body: blob,
+      })
 
-    if (!ossResponse.ok) {
-      const errorText = await ossResponse.text()
-      this.logger.error(`OSS upload failed: ${ossResponse.status}`, errorText)
-      throw new Error(`OSS upload failed: ${ossResponse.status}`)
+      if (!ossResponse.ok) {
+        const errorText = await ossResponse.text()
+        this.logger.error(`OSS upload failed: ${ossResponse.status}`, errorText)
+        throw new Error(`OSS upload failed: ${ossResponse.status}`)
+      }
+
+      this.logger.info('OSS upload successful')
+    } finally {
+      await this.runtime.removeHeaderRules([ossRuleId])
     }
-
-    this.logger.info('OSS upload successful')
 
     // 5. Return image URL
     let finalObjectKey = objectKey
