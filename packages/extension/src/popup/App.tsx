@@ -19,6 +19,7 @@ interface AppState {
   article: Article | null
   syncResults: SyncResult[]
   isSyncing: boolean
+  isExtracting: boolean
   syncProgress: string
   platforms: PlatformConfig[]
   history: SyncHistory[]
@@ -31,6 +32,7 @@ function App() {
     article: null,
     syncResults: [],
     isSyncing: false,
+    isExtracting: false,
     syncProgress: '',
     platforms: [],
     history: [],
@@ -71,6 +73,9 @@ function App() {
     try {
       logger.info('Extracting article...')
 
+      // Set extracting state
+      setState((prev) => ({ ...prev, isExtracting: true }))
+
       // Scroll to top before extraction
       await runtime.sendMessage({
         type: 'SCROLL_TO_TOP',
@@ -88,16 +93,20 @@ function App() {
         setState((prev) => ({
           ...prev,
           article: response.article,
+          isExtracting: false,
         }))
         logger.info('Article extracted successfully')
       } else if (response.error) {
+        setState((prev) => ({ ...prev, isExtracting: false }))
         logger.error('Article extraction failed:', response.error)
         alert('提取失败: ' + response.error)
       } else {
+        setState((prev) => ({ ...prev, isExtracting: false }))
         logger.error('No article or error in response')
         alert('提取失败: 未获取到文章内容')
       }
     } catch (error) {
+      setState((prev) => ({ ...prev, isExtracting: false }))
       logger.error('Failed to extract article:', error)
       const errorMsg = error instanceof Error ? error.message : String(error)
 
@@ -216,6 +225,7 @@ function App() {
             article={state.article}
             syncResults={state.syncResults}
             isSyncing={state.isSyncing}
+            isExtracting={state.isExtracting}
             syncProgress={state.syncProgress}
             platforms={state.platforms}
             currentUrl={state.currentUrl}
