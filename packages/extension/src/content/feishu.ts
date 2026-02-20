@@ -684,14 +684,35 @@ async function extractFromDOM(): Promise<Article | null> {
     let cover: string | undefined
     const coverMeta = document.querySelector('meta[property="og:image"]')
     if (coverMeta) {
-      cover = coverMeta.getAttribute('content') || undefined
+      const ogImage = coverMeta.getAttribute('content')
+      // Ignore Feishu's default favicon
+      if (ogImage && !ogImage.includes('feishu.ico')) {
+        cover = ogImage
+        console.log('[FeishuExtractor] Found cover from og:image:', cover)
+      }
     }
     if (!cover && images.length > 0) {
       cover = images[0]
+      console.log('[FeishuExtractor] Using first image as cover:', cover)
+    }
+
+    // Add cover to images list if not already included
+    const imagesToDownload = [...images]
+    if (cover && !imagesToDownload.includes(cover)) {
+      imagesToDownload.push(cover)
+      console.log('[FeishuExtractor] Added cover to download list')
     }
 
     // Pre-download images
-    const imageDataMap = await downloadImages(images)
+    const imageDataMap = await downloadImages(imagesToDownload)
+
+    // Use data URL for cover if available (so it can be displayed in popup)
+    if (cover && imageDataMap[cover]) {
+      console.log('[FeishuExtractor] Using data URL for cover, length:', imageDataMap[cover].length)
+      cover = imageDataMap[cover]
+    } else if (cover) {
+      console.warn('[FeishuExtractor] Cover image not in imageDataMap, using original URL:', cover)
+    }
 
     // Build article object
     const article: Article = {
