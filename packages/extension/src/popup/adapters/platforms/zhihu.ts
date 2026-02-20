@@ -450,11 +450,12 @@ export class ZhihuAdapter extends BaseAdapter {
         headers
       )
 
-      const draftUrl = `https://zhuanlan.zhihu.com/p/${draftId}/edit`
+      const isDraft = true // Currently always saves as draft
+      const articleUrl = `https://zhuanlan.zhihu.com/p/${draftId}${isDraft ? '/edit' : ''}`
 
       this.logger.info(`Draft created: ${draftId}`)
 
-      return this.createSuccessResult(String(draftId), draftUrl, true)
+      return this.createSuccessResult(String(draftId), articleUrl, isDraft)
     } catch (error) {
       this.logger.error('Failed to publish article to Zhihu:', error)
       return this.createErrorResult(
