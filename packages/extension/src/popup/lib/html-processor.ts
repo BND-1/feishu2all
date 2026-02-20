@@ -250,14 +250,6 @@ function escapeHtml(text: string): string {
 
 // ============ Presets ============
 
-/** Feishu extraction cleanup — scripts, comments, lazy images */
-export const feishuCleanPreset: HtmlProcessOptions = {
-  removeScripts: true,
-  removeComments: true,
-  processLazyImages: true,
-  processCodeBlocks: true,
-}
-
 /** Zhihu — aggressive cleanup for Draft.js editor */
 export const zhihuPreset: HtmlProcessOptions = {
   removeScripts: true,
