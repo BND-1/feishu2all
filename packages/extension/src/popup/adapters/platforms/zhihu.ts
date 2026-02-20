@@ -293,20 +293,24 @@ export class ZhihuAdapter extends BaseAdapter {
     this.logger.info('Token response:', JSON.stringify(tokenResponse))
 
     const uploadFile = tokenResponse.upload_file
-    const uploadToken = tokenResponse.upload_token
 
-    if (!uploadFile || !uploadToken) {
+    if (!uploadFile) {
       throw new Error(`Failed to get upload token from Zhihu: ${JSON.stringify(tokenResponse).substring(0, 200)}`)
     }
 
-    // 3. Check if image already exists
+    // 3. Check if image already exists (no upload_token needed)
     if (uploadFile.state === 1) {
       this.logger.info('Image already exists on Zhihu')
       const imgDetail = await this.waitForImageReady(uploadFile.image_id)
       return `https://pic4.zhimg.com/${imgDetail.original_hash}`
     }
 
-    // 4. Upload to Zhihu OSS
+    // 4. Upload to Zhihu OSS (upload_token required)
+    const uploadToken = tokenResponse.upload_token
+    if (!uploadToken) {
+      throw new Error(`No upload token for new image: ${JSON.stringify(tokenResponse).substring(0, 200)}`)
+    }
+
     await this.ossUpload(uploadFile.object_key, blob, uploadToken)
 
     // 5. Return image URL
