@@ -279,32 +279,24 @@ export class ZhihuAdapter extends BaseAdapter {
 
     this.logger.debug(`Image MD5 hash: ${imageHash}, size: ${blob.size}`)
 
-    // 2. Request upload token (minimal headers, matching Wechatsync)
-    const tokenResponse = await this.runtime.fetch('https://api.zhihu.com/images', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image_hash: imageHash, source: 'article' }),
-    })
+    // 2. Request upload token (with zhihu headers for auth)
+    const headers = await this.zhihuHeaders()
+    const tokenResponse = await this.postJson<any>(
+      'https://api.zhihu.com/images',
+      {
+        image_hash: imageHash,
+        source: 'article',
+      },
+      headers
+    )
 
-    if (!tokenResponse.ok) {
-      const errorText = await tokenResponse.text()
-      this.logger.error('Token request failed:', tokenResponse.status, errorText)
-      throw new Error(`Failed to get upload token: ${tokenResponse.status}`)
-    }
+    this.logger.info('Token response:', JSON.stringify(tokenResponse))
 
-    const tokenData = await tokenResponse.json() as {
-      upload_file: { state: number; image_id: string; object_key: string }
-      upload_token: { access_id: string; access_key: string; access_token: string }
-    }
-
-    this.logger.debug('Token response:', JSON.stringify(tokenData))
-
-    const uploadFile = tokenData.upload_file
-    const uploadToken = tokenData.upload_token
+    const uploadFile = tokenResponse.upload_file
+    const uploadToken = tokenResponse.upload_token
 
     if (!uploadFile || !uploadToken) {
-      throw new Error('Failed to get upload token from Zhihu')
+      throw new Error(`Failed to get upload token from Zhihu: ${JSON.stringify(tokenResponse).substring(0, 200)}`)
     }
 
     // 3. Check if image already exists
