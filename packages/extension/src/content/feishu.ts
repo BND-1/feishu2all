@@ -424,7 +424,12 @@ async function collectAllContentBlocks(): Promise<DocumentFragment | null> {
 
         const blockId = el.getAttribute('data-block-id')
         if (blockId && !collectedIds.has(blockId)) {
-          fragment.appendChild(el.cloneNode(true))
+          const cloned = el.cloneNode(true) as HTMLElement
+          // Remove forbidden placeholder text from cloned node (e.g. "附件不支持打印")
+          if (hasForbiddenPlaceholder && cloned.querySelectorAll) {
+            cloned.querySelectorAll('.gpf-biz-action-manager-forbidden-placeholder').forEach(p => p.remove())
+          }
+          fragment.appendChild(cloned)
           collectedIds.add(blockId)
         }
       }
