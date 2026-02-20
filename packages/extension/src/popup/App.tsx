@@ -187,6 +187,9 @@ function App() {
   }
 
   const addToHistory = async (article: Article, results: SyncResult[]) => {
+    logger.info('Adding to history, results count:', results.length)
+    logger.info('Results:', results.map(r => `${r.platform}: ${r.success}`).join(', '))
+
     const entry: SyncHistory = {
       id: Date.now().toString(),
       article,
@@ -194,8 +197,14 @@ function App() {
       timestamp: Date.now(),
     }
 
-    const updatedHistory = [entry, ...state.history].slice(0, 50) // Keep last 50
+    // Get current history from storage to avoid stale state closure issue
+    const stored = await runtime.getStorage('history')
+    const currentHistory: SyncHistory[] = stored?.history || []
+
+    const updatedHistory = [entry, ...currentHistory].slice(0, 50) // Keep last 50
     await runtime.setStorage({ history: updatedHistory })
+
+    logger.info('History saved, new count:', updatedHistory.length)
 
     setState((prev) => ({ ...prev, history: updatedHistory }))
   }
