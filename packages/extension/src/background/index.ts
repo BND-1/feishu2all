@@ -222,6 +222,18 @@ function handleMessage(
         .catch((error) => sendResponse({ article: null, error: error.message }))
       return true // Async response
 
+    case 'SCROLL_TO_TOP':
+      chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+        if (tab?.id) {
+          chrome.tabs.sendMessage(tab.id, { type: 'SCROLL_TO_TOP' })
+            .then((result) => sendResponse(result))
+            .catch((error) => sendResponse({ success: false, error: error.message }))
+        } else {
+          sendResponse({ success: false, error: 'No active tab' })
+        }
+      })
+      return true // Async response
+
     case 'GET_HISTORY':
       chrome.storage.local.get('history').then((data) => {
         sendResponse({ history: data.history || [] })
