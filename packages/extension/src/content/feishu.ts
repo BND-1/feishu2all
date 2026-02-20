@@ -243,13 +243,13 @@ function htmlToMarkdown(html: string): string {
     return `<${openTag}>${cleanContent}</h${openTag.match(/h([1-6])/)?.[1] || '2'}>`
   })
 
-  // Headings
-  md = md.replace(/<h1[^>]*>([\s\S]*?)<\/h1>/gi, '\n# $1\n')
-  md = md.replace(/<h2[^>]*>([\s\S]*?)<\/h2>/gi, '\n## $1\n')
-  md = md.replace(/<h3[^>]*>([\s\S]*?)<\/h3>/gi, '\n### $1\n')
-  md = md.replace(/<h4[^>]*>([\s\S]*?)<\/h4>/gi, '\n#### $1\n')
-  md = md.replace(/<h5[^>]*>([\s\S]*?)<\/h5>/gi, '\n##### $1\n')
-  md = md.replace(/<h6[^>]*>([\s\S]*?)<\/h6>/gi, '\n###### $1\n')
+  // Headings — only add \n before, not after (next block's \n provides the line break)
+  md = md.replace(/<h1[^>]*>([\s\S]*?)<\/h1>/gi, '\n# $1')
+  md = md.replace(/<h2[^>]*>([\s\S]*?)<\/h2>/gi, '\n## $1')
+  md = md.replace(/<h3[^>]*>([\s\S]*?)<\/h3>/gi, '\n### $1')
+  md = md.replace(/<h4[^>]*>([\s\S]*?)<\/h4>/gi, '\n#### $1')
+  md = md.replace(/<h5[^>]*>([\s\S]*?)<\/h5>/gi, '\n##### $1')
+  md = md.replace(/<h6[^>]*>([\s\S]*?)<\/h6>/gi, '\n###### $1')
 
   // Bold and italic
   md = md.replace(/<(strong|b)[^>]*>([\s\S]*?)<\/\1>/gi, '**$2**')
