@@ -13,6 +13,7 @@ import type {
   Logger,
 } from '../../types'
 import type { RuntimeInterface } from '../runtime/extension'
+import { decodeHtmlEntities } from '../lib/html-processor'
 
 export abstract class BaseAdapter {
   public readonly config: PlatformConfig
@@ -20,6 +21,9 @@ export abstract class BaseAdapter {
   protected readonly baseUrl: string
   protected readonly runtime: RuntimeInterface
   protected options: AdapterOptions = {}
+
+  /** Throttle delay between image uploads (ms) — can be overridden by subclasses */
+  protected imageUploadThrottleMs = 300
 
   constructor(config: PlatformConfig, logger: Logger, baseUrl: string, runtime: RuntimeInterface) {
     this.config = config
@@ -242,14 +246,7 @@ export abstract class BaseAdapter {
     while ((match = imageRegex.exec(markdown)) !== null) {
       let url = match[1]
       if (url) {
-        // Decode HTML entities in URL
-        url = url
-          .replace(/&amp;/g, '&')
-          .replace(/&lt;/g, '<')
-          .replace(/&gt;/g, '>')
-          .replace(/&quot;/g, '"')
-          .replace(/&#39;/g, "'")
-
+        url = decodeHtmlEntities(url)
         if (!urls.includes(url)) {
           urls.push(url)
         }
@@ -378,7 +375,7 @@ export abstract class BaseAdapter {
 
         // Throttle between uploads to avoid rate limiting
         if (processed < imageUrls.length) {
-          await new Promise((r) => setTimeout(r, 300))
+          await new Promise((r) => setTimeout(r, this.imageUploadThrottleMs))
         }
       } catch (error) {
         this.logger.error(`Failed to process image ${url}:`, error)
@@ -432,19 +429,11 @@ export abstract class BaseAdapter {
       const mdImageUrls = this.extractImageUrlsFromMarkdown(article.markdown)
 
       // Decode HTML entities in all URLs to ensure consistency
-      const decodeUrl = (url: string) => url
-        .replace(/&amp;/g, '&')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&quot;/g, '"')
-        .replace(/&#39;/g, "'")
-
-      const decodedHtmlUrls = htmlImageUrls.map(decodeUrl)
-      const decodedMdUrls = mdImageUrls.map(decodeUrl)
+      const decodedHtmlUrls = htmlImageUrls.map(decodeHtmlEntities)
+      const decodedMdUrls = mdImageUrls.map(decodeHtmlEntities)
 
       const imageUrls = [...new Set([...decodedHtmlUrls, ...decodedMdUrls])]
       this.logger.info(`Found ${imageUrls.length} images to process (${htmlImageUrls.length} from HTML, ${mdImageUrls.length} from markdown)`)
-      this.logger.info(`Sample URLs:`, imageUrls.slice(0, 2))
 
       let finalMarkdown = article.markdown
       let finalHtml = article.html

@@ -7,6 +7,25 @@
  * - Collects all content blocks by scrolling and observing DOM changes
  */
 
+const LOG_PREFIX = '[FeishuExtractor]'
+const DEBUG = false // Set to true for verbose logging
+
+function log(...args: unknown[]) {
+  console.log(LOG_PREFIX, ...args)
+}
+
+function debug(...args: unknown[]) {
+  if (DEBUG) console.log(LOG_PREFIX, ...args)
+}
+
+function warn(...args: unknown[]) {
+  console.warn(LOG_PREFIX, ...args)
+}
+
+function error(...args: unknown[]) {
+  console.error(LOG_PREFIX, ...args)
+}
+
 // Types for internal use
 interface Article {
   title: string
@@ -118,23 +137,22 @@ async function downloadImages(imageUrls: string[]): Promise<Record<string, strin
 
   if (imageUrls.length === 0) return imageDataMap
 
-  console.log(`[FeishuExtractor] Pre-downloading ${imageUrls.length} images...`)
-  console.log(`[FeishuExtractor] Image URLs:`, imageUrls)
+  log(`Pre-downloading ${imageUrls.length} images...`)
 
   for (const imgUrl of imageUrls) {
     try {
-      console.log(`[FeishuExtractor] Downloading: ${imgUrl}`)
+      debug(`Downloading: ${imgUrl}`)
       const resp = await fetch(imgUrl, { credentials: 'include' })
 
       if (!resp.ok) {
-        console.error(`[FeishuExtractor] Download failed (${resp.status} ${resp.statusText}): ${imgUrl}`)
+        error(`Download failed (${resp.status} ${resp.statusText}): ${imgUrl}`)
         continue
       }
 
       const blob = await resp.blob()
 
       if (blob.size === 0) {
-        console.error(`[FeishuExtractor] Downloaded blob is empty: ${imgUrl}`)
+        error(`Downloaded blob is empty: ${imgUrl}`)
         continue
       }
 
@@ -146,19 +164,17 @@ async function downloadImages(imageUrls: string[]): Promise<Record<string, strin
       })
 
       imageDataMap[imgUrl] = dataUrl
-      console.log(`[FeishuExtractor] Downloaded successfully (${blob.size} bytes, ${blob.type}): ${imgUrl.substring(0, 80)}...`)
+      debug(`Downloaded (${blob.size} bytes): ${imgUrl.substring(0, 80)}...`)
     } catch (err) {
-      console.error(`[FeishuExtractor] Download error: ${imgUrl}`, err)
+      error(`Download error: ${imgUrl}`, err)
     }
   }
 
-  console.log(`[FeishuExtractor] Downloaded ${Object.keys(imageDataMap).length}/${imageUrls.length} images`)
-  console.log(`[FeishuExtractor] imageDataMap keys:`, Object.keys(imageDataMap))
+  log(`Downloaded ${Object.keys(imageDataMap).length}/${imageUrls.length} images`)
 
-  // Log failed downloads
   const failed = imageUrls.filter(url => !imageDataMap[url])
   if (failed.length > 0) {
-    console.warn(`[FeishuExtractor] Failed to download ${failed.length} images:`, failed)
+    warn(`Failed to download ${failed.length} images`)
   }
 
   return imageDataMap
@@ -330,7 +346,7 @@ function htmlToMarkdown(html: string): string {
  * Based on: https://greasyfork.org/scripts/470055
  */
 async function collectAllContentBlocks(): Promise<DocumentFragment | null> {
-  console.log('[FeishuExtractor] Collecting all content blocks...')
+  debug('Collecting all content blocks...')
 
   const scrollContainer = document.querySelector('.bear-web-x-container') as HTMLElement
 
@@ -341,28 +357,26 @@ async function collectAllContentBlocks(): Promise<DocumentFragment | null> {
   for (const wrapper of Array.from(allWrappers)) {
     // Skip if inside AI summary block
     if (wrapper.closest('.docx-ai-summary-block')) {
-      console.log('[FeishuExtractor] Skipping render-unit-wrapper inside AI summary')
+      debug('Skipping render-unit-wrapper inside AI summary')
       continue
     }
     // Skip if inside back-ref list
     if (wrapper.closest('.docx-back_ref_list-block')) {
-      console.log('[FeishuExtractor] Skipping render-unit-wrapper inside back-ref list')
+      debug('Skipping render-unit-wrapper inside back-ref list')
       continue
     }
     // This should be the main content wrapper
     contentContainer = wrapper as HTMLElement
-    console.log('[FeishuExtractor] Found main content render-unit-wrapper')
+    debug('Found main content render-unit-wrapper')
     break
   }
 
   if (!scrollContainer || !contentContainer) {
-    console.warn('[FeishuExtractor] Could not find Feishu containers')
-    console.log('[FeishuExtractor] scrollContainer:', !!scrollContainer)
-    console.log('[FeishuExtractor] contentContainer:', !!contentContainer)
+    warn('Could not find Feishu containers')
     return null
   }
 
-  console.log('[FeishuExtractor] Found Feishu containers')
+  debug('Found Feishu containers')
 
   const fragment = document.createDocumentFragment()
   const collectedIds = new Set<string>()
@@ -381,14 +395,14 @@ async function collectAllContentBlocks(): Promise<DocumentFragment | null> {
         // Most reliable way: check for DOC_AI_SUMMARY_ROOT_BLOCK_ID
         const recordId = el.getAttribute('data-record-id')
         if (recordId === 'DOC_AI_SUMMARY_ROOT_BLOCK_ID') {
-          console.log('[FeishuExtractor] Skipping AI summary block (data-record-id):', recordId)
+          debug('Skipping AI summary block (data-record-id)')
           continue
         }
 
         // Also check for AI summary related classes
         const classList = el.className || ''
         if (classList.includes('docx-ai-summary-block')) {
-          console.log('[FeishuExtractor] Skipping AI summary block (class):', el.className)
+          debug('Skipping AI summary block (class)')
           continue
         }
 
@@ -408,7 +422,7 @@ async function collectAllContentBlocks(): Promise<DocumentFragment | null> {
         }
 
         if (hasAISummaryChild) {
-          console.log('[FeishuExtractor] Skipping block with AI summary child')
+          debug('Skipping block with AI summary child')
           continue
         }
 
@@ -418,7 +432,7 @@ async function collectAllContentBlocks(): Promise<DocumentFragment | null> {
         const isImageBlock = el.querySelector && el.querySelector('img')
 
         if (hasForbiddenPlaceholder && !isImageBlock) {
-          console.log('[FeishuExtractor] Skipping block with forbidden placeholder (restricted content)')
+          debug('Skipping block with forbidden placeholder (restricted content)')
           continue
         }
 
@@ -438,7 +452,7 @@ async function collectAllContentBlocks(): Promise<DocumentFragment | null> {
 
   // Collect initial content
   collectNodes(contentContainer.childNodes)
-  console.log('[FeishuExtractor] Initial blocks collected:', collectedIds.size)
+  debug(`Initial blocks collected: ${collectedIds.size}`)
 
   // Set up observer for new content
   const observer = new MutationObserver((mutations) => {
@@ -477,7 +491,7 @@ async function collectAllContentBlocks(): Promise<DocumentFragment | null> {
     }, scrollInterval)
   })
 
-  console.log('[FeishuExtractor] Collection complete, total blocks:', collectedIds.size)
+  log(`Collection complete, total blocks: ${collectedIds.size}`)
   return fragment
 }
 
@@ -486,18 +500,18 @@ async function collectAllContentBlocks(): Promise<DocumentFragment | null> {
  */
 async function extractFeishuArticle(): Promise<Article | null> {
   try {
-    console.log('[FeishuExtractor] Starting DOM-based extraction...')
+    debug('Starting DOM-based extraction...')
 
     if (!isFeishuPage()) {
-      console.warn('[FeishuExtractor] Not a Feishu page')
+      warn('Not a Feishu page')
       return null
     }
 
     // Use DOM extraction
     return await extractFromDOM()
-  } catch (error) {
-    console.error('[FeishuExtractor] Extraction failed:', error)
-    throw error
+  } catch (err) {
+    error('Extraction failed:', err)
+    throw err
   }
 }
 
@@ -506,14 +520,14 @@ async function extractFeishuArticle(): Promise<Article | null> {
  */
 async function extractFromDOM(): Promise<Article | null> {
   try {
-    console.log('[FeishuExtractor] Starting DOM-based extraction...')
+    debug('Starting DOM-based extraction...')
 
     // Try to collect all content blocks (handles virtual scrolling)
     const fragment = await collectAllContentBlocks()
     let contentContainer: HTMLElement | DocumentFragment | null = fragment
 
     if (!contentContainer) {
-      console.warn('[FeishuExtractor] Could not collect content blocks, trying standard selectors...')
+      warn('Could not collect content blocks, trying standard selectors...')
 
       // Fallback to standard selectors
       const selectors = [
@@ -529,7 +543,7 @@ async function extractFromDOM(): Promise<Article | null> {
         const el = document.querySelector(selector) as HTMLElement
         if (el && el.textContent && el.textContent.trim().length > 100) {
           contentContainer = el
-          console.log('[FeishuExtractor] Found content with selector:', selector)
+          debug(`Found content with selector: ${selector}`)
           break
         }
       }
@@ -547,7 +561,7 @@ async function extractFromDOM(): Promise<Article | null> {
     if (!title) {
       title = 'Untitled Document'
     }
-    console.log('[FeishuExtractor] Title:', title)
+    debug(`Title: ${title}`)
 
     // Clone content to avoid modifying the page
     let clonedContent: HTMLElement
@@ -564,14 +578,14 @@ async function extractFromDOM(): Promise<Article | null> {
 
     // Extract images
     const images = extractImages(clonedContent)
-    console.log('[FeishuExtractor] Found', images.length, 'images')
+    debug(`Found ${images.length} images`)
 
     // Get HTML content
     const html = clonedContent.innerHTML
 
     // Convert to Markdown
     const markdown = htmlToMarkdown(html)
-    console.log('[FeishuExtractor] Generated markdown length:', markdown.length)
+    debug(`Generated markdown length: ${markdown.length}`)
 
     // Get cover image
     let cover: string | undefined
@@ -581,19 +595,18 @@ async function extractFromDOM(): Promise<Article | null> {
       // Ignore Feishu's default favicon
       if (ogImage && !ogImage.includes('feishu.ico')) {
         cover = ogImage
-        console.log('[FeishuExtractor] Found cover from og:image:', cover)
+        debug(`Found cover from og:image: ${cover}`)
       }
     }
     if (!cover && images.length > 0) {
       cover = images[0]
-      console.log('[FeishuExtractor] Using first image as cover:', cover)
+      debug(`Using first image as cover`)
     }
 
     // Add cover to images list if not already included
     const imagesToDownload = [...images]
     if (cover && !imagesToDownload.includes(cover)) {
       imagesToDownload.push(cover)
-      console.log('[FeishuExtractor] Added cover to download list')
     }
 
     // Pre-download images
@@ -601,10 +614,10 @@ async function extractFromDOM(): Promise<Article | null> {
 
     // Use data URL for cover if available (so it can be displayed in popup)
     if (cover && imageDataMap[cover]) {
-      console.log('[FeishuExtractor] Using data URL for cover, length:', imageDataMap[cover].length)
+      debug(`Using data URL for cover`)
       cover = imageDataMap[cover]
     } else if (cover) {
-      console.warn('[FeishuExtractor] Cover image not in imageDataMap, using original URL:', cover)
+      warn('Cover image not in imageDataMap, using original URL')
     }
 
     // Build article object
@@ -621,11 +634,11 @@ async function extractFromDOM(): Promise<Article | null> {
       imageDataMap: Object.keys(imageDataMap).length > 0 ? imageDataMap : undefined,
     }
 
-    console.log('[FeishuExtractor] Successfully extracted article')
+    log('Successfully extracted article')
     return article
-  } catch (error) {
-    console.error('[FeishuExtractor] Extraction failed:', error)
-    throw error
+  } catch (err) {
+    error('Extraction failed:', err)
+    throw err
   }
 }
 
@@ -633,24 +646,24 @@ async function extractFromDOM(): Promise<Article | null> {
  * Initialize the content script
  */
 function initializeContentScript() {
-  console.log('[FeishuExtractor] Feishu content script loaded (DOM-based version)')
-  console.log('[FeishuExtractor] URL:', window.location.href)
-  console.log('[FeishuExtractor] Is Feishu page:', isFeishuPage())
+  log('Content script loaded (DOM-based version)')
+  debug(`URL: ${window.location.href}`)
+  debug(`Is Feishu page: ${isFeishuPage()}`)
 
   /**
    * Listen for extraction requests from background/popup
    */
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    console.log('[FeishuExtractor] Received message:', message.type, message)
+    debug(`Received message: ${message.type}`)
 
     // Handle scroll to top
     if (message.type === 'SCROLL_TO_TOP') {
-      console.log('[FeishuExtractor] Scrolling to top...')
+      debug('Scrolling to top...')
       // Feishu uses .bear-web-x-container as the actual scroll container
       const scrollContainer = document.querySelector('.bear-web-x-container') as HTMLElement
       if (scrollContainer) {
         scrollContainer.scrollTop = 0
-        console.log('[FeishuExtractor] Scrolled container to top, scrollTop:', scrollContainer.scrollTop)
+        debug(`Scrolled container to top`)
       }
       window.scrollTo(0, 0)
       sendResponse({ success: true })
@@ -658,26 +671,26 @@ function initializeContentScript() {
     }
 
     if (message.type === 'EXTRACT_ARTICLE') {
-      console.log('[FeishuExtractor] Extracting article...')
+      debug('Extracting article...')
 
       extractFeishuArticle()
         .then((article) => {
           if (article) {
-            console.log('[FeishuExtractor] Sending article:', article.title)
+            log(`Sending article: ${article.title}`)
             sendResponse({ article, error: null })
           } else {
-            console.error('[FeishuExtractor] Failed to extract article')
+            error('Failed to extract article')
             sendResponse({
               article: null,
               error: 'Could not extract article. Make sure you are on a Feishu wiki/docs/docx page.',
             })
           }
         })
-        .catch((error) => {
-          console.error('[FeishuExtractor] Extraction error:', error)
+        .catch((err) => {
+          error('Extraction error:', err)
           sendResponse({
             article: null,
-            error: error instanceof Error ? error.message : String(error),
+            error: err instanceof Error ? err.message : String(err),
           })
         })
 

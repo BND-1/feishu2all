@@ -248,6 +248,22 @@ function escapeHtml(text: string): string {
     .replace(/'/g, '&#039;')
 }
 
+// ============ Utility functions ============
+
+/**
+ * Decode HTML entities in a string (commonly used for URLs)
+ */
+export function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#039;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+}
+
 // ============ Presets ============
 
 /** Zhihu — aggressive cleanup for Draft.js editor */

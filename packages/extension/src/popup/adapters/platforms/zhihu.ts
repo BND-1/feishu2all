@@ -71,27 +71,40 @@ interface ZhihuImageUploadResponse {
 export class ZhihuAdapter extends BaseAdapter {
   private xsrfToken: string = ''
   private headerRuleIds: number[] = []
+  private headerRulesSetupPromise: Promise<void> | null = null
 
   constructor(runtime: RuntimeInterface) {
     super(ZHIHU_PLATFORM_CONFIG, createLogger('Zhihu'), ZHIHU_CONFIG.baseUrl, runtime)
   }
 
   /**
-   * Set up declarativeNetRequest rules for Zhihu API
+   * Set up declarativeNetRequest rules for Zhihu API (with dedup)
    */
   private async setupHeaderRules(): Promise<void> {
+    // Avoid concurrent setup calls
+    if (this.headerRulesSetupPromise) {
+      return this.headerRulesSetupPromise
+    }
     if (this.headerRuleIds.length > 0) return
 
-    const ruleHeaders = { 'x-requested-with': 'fetch' }
+    this.headerRulesSetupPromise = (async () => {
+      const ruleHeaders = { 'x-requested-with': 'fetch' }
 
-    const [r1, r2, r3] = await Promise.all([
-      this.runtime.addHeaderRule('*://www.zhihu.com/api/*', ruleHeaders),
-      this.runtime.addHeaderRule('*://zhuanlan.zhihu.com/api/*', ruleHeaders),
-      this.runtime.addHeaderRule('*://api.zhihu.com/*', ruleHeaders),
-    ])
+      const [r1, r2, r3] = await Promise.all([
+        this.runtime.addHeaderRule('*://www.zhihu.com/api/*', ruleHeaders),
+        this.runtime.addHeaderRule('*://zhuanlan.zhihu.com/api/*', ruleHeaders),
+        this.runtime.addHeaderRule('*://api.zhihu.com/*', ruleHeaders),
+      ])
 
-    this.headerRuleIds = [r1, r2, r3]
-    this.logger.debug('Header rules added:', this.headerRuleIds)
+      this.headerRuleIds = [r1, r2, r3]
+      this.logger.debug('Header rules added:', this.headerRuleIds)
+    })()
+
+    try {
+      await this.headerRulesSetupPromise
+    } finally {
+      this.headerRulesSetupPromise = null
+    }
   }
 
   /**
