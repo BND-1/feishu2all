@@ -54,27 +54,15 @@ function App() {
 
       const currentUrl = currentTab?.url || ''
 
-      // Try to restore cached article for current URL
-      const cachedArticle = await getCachedArticle(currentUrl)
-
       setState((prev) => ({
         ...prev,
         currentUrl,
         platforms: config,
         history,
-        article: cachedArticle,
       }))
-
-      if (cachedArticle) {
-        logger.info('Restored cached article for current page')
-      }
     } catch (error) {
       logger.error('Failed to initialize app:', error)
     }
-  }
-
-  const isFeishuUrl = (url: string): boolean => {
-    return /https?:\/\/[^.]+\.feishu\.cn\/(wiki|docs|docx)/.test(url)
   }
 
   const extractArticle = async (url?: string) => {
@@ -83,10 +71,6 @@ function App() {
 
       // Set extracting state
       setState((prev) => ({ ...prev, isExtracting: true }))
-
-      // Get current tab URL for caching
-      const currentTab = await runtime.getCurrentTab()
-      const currentUrl = currentTab?.url || state.currentUrl
 
       // Scroll to top before extraction
       await runtime.sendMessage({
@@ -107,9 +91,6 @@ function App() {
           article: response.article,
           isExtracting: false,
         }))
-
-        // Cache the extracted article
-        await cacheArticle(currentUrl, response.article)
 
         logger.info('Article extracted successfully')
       } else if (response.error) {
@@ -203,53 +184,6 @@ function App() {
   const getStoredHistory = async (): Promise<SyncHistory[]> => {
     const stored = await runtime.getStorage('history')
     return stored?.history || []
-  }
-
-  const getCachedArticle = async (url: string): Promise<Article | null> => {
-    try {
-      logger.info('Trying to get cached article for URL:', url)
-      const stored = await runtime.getStorage('cachedArticle')
-      logger.info('Storage result:', stored)
-
-      if (stored?.cachedArticle) {
-        logger.info('Found cached article, URL:', stored.cachedArticle.url)
-        if (stored.cachedArticle.url === url) {
-          logger.info('URL matches, returning cached article')
-          return stored.cachedArticle.article
-        } else {
-          logger.info('URL does not match, cached URL:', stored.cachedArticle.url, 'current URL:', url)
-        }
-      } else {
-        logger.info('No cached article found')
-      }
-      return null
-    } catch (error) {
-      logger.error('Failed to get cached article:', error)
-      return null
-    }
-  }
-
-  const cacheArticle = async (url: string, article: Article) => {
-    try {
-      logger.info('Caching article for URL:', url)
-      logger.info('Article title:', article.title)
-
-      // Exclude imageDataMap from cache (too large, base64 images)
-      // Images will be re-downloaded on next extraction if needed
-      const { imageDataMap, ...articleWithoutImages } = article
-
-      await runtime.setStorage({
-        cachedArticle: {
-          url,
-          article: articleWithoutImages,
-          timestamp: Date.now(),
-        },
-      })
-
-      logger.info('Article cached successfully')
-    } catch (error) {
-      logger.error('Failed to cache article:', error)
-    }
   }
 
   const addToHistory = async (article: Article, results: SyncResult[]) => {
