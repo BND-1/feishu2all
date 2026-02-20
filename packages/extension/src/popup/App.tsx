@@ -57,10 +57,7 @@ function App() {
         history,
       }))
 
-      // Try to extract article if on Feishu page
-      if (currentTab?.url && isFeishuUrl(currentTab.url)) {
-        await extractArticle(currentTab.url)
-      }
+      // Don't auto-extract, wait for user to click extract button
     } catch (error) {
       logger.error('Failed to initialize app:', error)
     }
@@ -73,6 +70,14 @@ function App() {
   const extractArticle = async (url?: string) => {
     try {
       logger.info('Extracting article...')
+
+      // Scroll to top before extraction
+      await runtime.sendMessage({
+        type: 'SCROLL_TO_TOP',
+      })
+
+      // Wait a bit for scroll to complete
+      await new Promise(resolve => setTimeout(resolve, 300))
 
       const response = await runtime.sendMessage<{ article: Article | null; error?: string }>({
         type: 'EXTRACT_ARTICLE',

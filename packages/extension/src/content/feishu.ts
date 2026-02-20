@@ -754,6 +754,14 @@ function initializeContentScript() {
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     console.log('[FeishuExtractor] Received message:', message.type, message)
 
+    // Handle scroll to top
+    if (message.type === 'SCROLL_TO_TOP') {
+      console.log('[FeishuExtractor] Scrolling to top...')
+      window.scrollTo({ top: 0, behavior: 'smooth' })
+      sendResponse({ success: true })
+      return true
+    }
+
     if (message.type === 'EXTRACT_ARTICLE') {
       console.log('[FeishuExtractor] Extracting article...')
 
