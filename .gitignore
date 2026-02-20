@@ -43,4 +43,9 @@ coverage/
 .cache/
 temp/
 tmp/
+
+# Debug & test data
 response
+html
+debug-*.js
+报错/
