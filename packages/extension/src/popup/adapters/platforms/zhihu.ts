@@ -279,21 +279,29 @@ export class ZhihuAdapter extends BaseAdapter {
 
     this.logger.debug(`Image MD5 hash: ${imageHash}, size: ${blob.size}`)
 
-    // 2. Request upload token
-    const headers = await this.zhihuHeaders()
-    const tokenResponse = await this.postJson<any>(
-      'https://api.zhihu.com/images',
-      {
-        image_hash: imageHash,
-        source: 'article',
-      },
-      headers
-    )
+    // 2. Request upload token (minimal headers, matching Wechatsync)
+    const tokenResponse = await this.runtime.fetch('https://api.zhihu.com/images', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image_hash: imageHash, source: 'article' }),
+    })
 
-    this.logger.debug('Token response:', JSON.stringify(tokenResponse))
+    if (!tokenResponse.ok) {
+      const errorText = await tokenResponse.text()
+      this.logger.error('Token request failed:', tokenResponse.status, errorText)
+      throw new Error(`Failed to get upload token: ${tokenResponse.status}`)
+    }
 
-    const uploadFile = tokenResponse.upload_file
-    const uploadToken = tokenResponse.upload_token
+    const tokenData = await tokenResponse.json() as {
+      upload_file: { state: number; image_id: string; object_key: string }
+      upload_token: { access_id: string; access_key: string; access_token: string }
+    }
+
+    this.logger.debug('Token response:', JSON.stringify(tokenData))
+
+    const uploadFile = tokenData.upload_file
+    const uploadToken = tokenData.upload_token
 
     if (!uploadFile || !uploadToken) {
       throw new Error('Failed to get upload token from Zhihu')
@@ -302,20 +310,57 @@ export class ZhihuAdapter extends BaseAdapter {
     // 3. Check if image already exists
     if (uploadFile.state === 1) {
       this.logger.info('Image already exists on Zhihu')
-      const objectKey = uploadFile.object_key || uploadFile.image_id
-      return `https://pic4.zhimg.com/${objectKey}`
+      const imgDetail = await this.waitForImageReady(uploadFile.image_id)
+      return `https://pic4.zhimg.com/${imgDetail.original_hash}`
     }
 
-    // 4. Upload to Zhihu OSS with proper signature
-    const objectKey = uploadFile.object_key
+    // 4. Upload to Zhihu OSS
+    await this.ossUpload(uploadFile.object_key, blob, uploadToken)
+
+    // 5. Return image URL
+    let objectKey = uploadFile.object_key
+    if (blob.type === 'image/gif') {
+      objectKey = objectKey + '.gif'
+    }
+
+    return `https://pic4.zhimg.com/${objectKey}`
+  }
+
+  /**
+   * Wait for image processing to complete on Zhihu
+   */
+  private async waitForImageReady(imageId: string): Promise<{ original_hash: string }> {
+    for (let i = 0; i < 10; i++) {
+      const response = await this.runtime.fetch(`https://api.zhihu.com/images/${imageId}`, {
+        credentials: 'include',
+      })
+      const data = await response.json() as { status?: string; original_hash?: string }
+
+      if (data.status === 'completed' || data.original_hash) {
+        return data as { original_hash: string }
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 1000))
+    }
+    throw new Error('Image processing timeout')
+  }
+
+  /**
+   * Upload to Zhihu OSS with V1 signature
+   */
+  private async ossUpload(
+    objectKey: string,
+    blob: Blob,
+    token: { access_id: string; access_key: string; access_token: string }
+  ): Promise<void> {
     const contentType = blob.type || 'application/octet-stream'
     const ossDate = new Date().toUTCString()
     const ossUserAgent = 'aliyun-sdk-js/6.8.0'
 
-    // Build OSS headers (must be sorted alphabetically)
+    // Build CanonicalizedOSSHeaders (sorted alphabetically)
     const ossHeaders: Record<string, string> = {
       'x-oss-date': ossDate,
-      'x-oss-security-token': uploadToken.access_token,
+      'x-oss-security-token': token.access_token,
       'x-oss-user-agent': ossUserAgent,
     }
 
@@ -324,9 +369,7 @@ export class ZhihuAdapter extends BaseAdapter {
       .map(key => `${key}:${ossHeaders[key]}`)
       .join('\n')
 
-    // CanonicalizedResource: /bucket/object-key
-    const bucket = 'zhihu-pics'
-    const canonicalizedResource = `/${bucket}/${objectKey}`
+    const canonicalizedResource = `/zhihu-pics/${objectKey}`
 
     // Build string to sign (OSS V1 signature)
     const stringToSign =
@@ -337,15 +380,9 @@ export class ZhihuAdapter extends BaseAdapter {
       canonicalizedOSSHeaders + '\n' +
       canonicalizedResource
 
-    this.logger.debug('OSS stringToSign:', stringToSign)
+    const signature = await this.hmacSha1Base64(token.access_key, stringToSign)
+    const authorization = `OSS ${token.access_id}:${signature}`
 
-    // Calculate HMAC-SHA1 signature
-    const signature = await this.hmacSha1Base64(uploadToken.access_key, stringToSign)
-    const authorization = `OSS ${uploadToken.access_id}:${signature}`
-
-    this.logger.debug('OSS authorization:', authorization)
-
-    // Upload to OSS
     const ossUrl = `${ZHIHU_CONFIG.ossUrl}/${objectKey}`
     this.logger.info(`Uploading to OSS: ${ossUrl}`)
 
@@ -355,19 +392,17 @@ export class ZhihuAdapter extends BaseAdapter {
       { 'Origin': 'https://zhuanlan.zhihu.com', 'Referer': 'https://zhuanlan.zhihu.com/' }
     )
 
-    const uploadHeaders = {
-      'Content-Type': contentType,
-      'Date': ossDate,
-      'Authorization': authorization,
-      'x-oss-date': ossDate,
-      'x-oss-security-token': uploadToken.access_token,
-      'x-oss-user-agent': ossUserAgent,
-    }
-
     try {
       const ossResponse = await this.runtime.fetch(ossUrl, {
         method: 'PUT',
-        headers: uploadHeaders,
+        headers: {
+          'Content-Type': contentType,
+          'Date': ossDate,
+          'Authorization': authorization,
+          'x-oss-date': ossDate,
+          'x-oss-security-token': token.access_token,
+          'x-oss-user-agent': ossUserAgent,
+        },
         body: blob,
       })
 
@@ -381,14 +416,6 @@ export class ZhihuAdapter extends BaseAdapter {
     } finally {
       await this.runtime.removeHeaderRules([ossRuleId])
     }
-
-    // 5. Return image URL
-    let finalObjectKey = objectKey
-    if (blob.type === 'image/gif') {
-      finalObjectKey = objectKey + '.gif'
-    }
-
-    return `https://pic4.zhimg.com/${finalObjectKey}`
   }
 
   /**
