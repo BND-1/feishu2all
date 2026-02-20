@@ -361,25 +361,9 @@ function createTurndownService(): TurndownService {
 
   // IMPORTANT: Add custom rules FIRST to override default behavior
 
-  // Custom rule for Feishu headings (div.heading-h1, div.heading-h2, etc.)
-  turndownService.addRule('feishuHeadings', {
-    filter: function (node) {
-      if (node.nodeName !== 'DIV') return false
-      const className = (node as HTMLElement).className || ''
-      return /heading-h[1-6]/.test(className)
-    },
-    replacement: function (content, node) {
-      const className = (node as HTMLElement).className || ''
-      const match = className.match(/heading-h([1-6])/)
-      if (!match) return content
-
-      const level = parseInt(match[1])
-      const hashes = '#'.repeat(level)
-      return '\n\n' + hashes + ' ' + content.trim() + '\n\n'
-    },
-  })
-
   // Custom rule for Feishu heading blocks (data-block-type="heading1", etc.)
+  // Feishu uses <div data-block-type="heading1"> instead of standard <h1> tags
+  // This rule converts them to Markdown headings (# ## ### etc.)
   turndownService.addRule('feishuHeadingBlocks', {
     filter: function (node) {
       if (node.nodeName !== 'DIV') return false
@@ -392,7 +376,8 @@ function createTurndownService(): TurndownService {
       if (!match) return content
 
       const level = parseInt(match[1])
-      const hashes = '#'.repeat(Math.min(level, 6)) // Max 6 levels
+      const hashes = '#'.repeat(Math.min(level, 6)) // Max 6 levels (Markdown standard)
+
       return '\n\n' + hashes + ' ' + content.trim() + '\n\n'
     },
   })
