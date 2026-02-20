@@ -413,7 +413,11 @@ async function collectAllContentBlocks(): Promise<DocumentFragment | null> {
         }
 
         // Skip blocks with print-forbidden placeholders (attachments, restricted content)
-        if (el.querySelector && el.querySelector('.gpf-biz-action-manager-forbidden-placeholder')) {
+        // But allow image blocks even if they have the placeholder (might be loading state)
+        const hasForbiddenPlaceholder = el.querySelector && el.querySelector('.gpf-biz-action-manager-forbidden-placeholder')
+        const isImageBlock = el.querySelector && el.querySelector('img')
+
+        if (hasForbiddenPlaceholder && !isImageBlock) {
           console.log('[FeishuExtractor] Skipping block with forbidden placeholder (restricted content)')
           continue
         }
