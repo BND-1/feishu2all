@@ -19,6 +19,7 @@ interface AppState {
   article: Article | null
   syncResults: SyncResult[]
   isSyncing: boolean
+  isExtracting: boolean
   syncProgress: string
   platforms: PlatformConfig[]
   history: SyncHistory[]
@@ -31,6 +32,7 @@ function App() {
     article: null,
     syncResults: [],
     isSyncing: false,
+    isExtracting: false,
     syncProgress: '',
     platforms: [],
     history: [],
@@ -50,29 +52,33 @@ function App() {
         getStoredHistory(),
       ])
 
+      const currentUrl = currentTab?.url || ''
+
       setState((prev) => ({
         ...prev,
-        currentUrl: currentTab?.url || '',
+        currentUrl,
         platforms: config,
         history,
       }))
-
-      // Try to extract article if on Feishu page
-      if (currentTab?.url && isFeishuUrl(currentTab.url)) {
-        await extractArticle(currentTab.url)
-      }
     } catch (error) {
       logger.error('Failed to initialize app:', error)
     }
   }
 
-  const isFeishuUrl = (url: string): boolean => {
-    return /https?:\/\/[^.]+\.feishu\.cn\/(wiki|docs|docx)/.test(url)
-  }
-
   const extractArticle = async (url?: string) => {
     try {
       logger.info('Extracting article...')
+
+      // Set extracting state
+      setState((prev) => ({ ...prev, isExtracting: true }))
+
+      // Scroll to top before extraction
+      await runtime.sendMessage({
+        type: 'SCROLL_TO_TOP',
+      })
+
+      // Wait for DOM to render after scroll (increased for dynamic content)
+      await new Promise(resolve => setTimeout(resolve, 800))
 
       const response = await runtime.sendMessage<{ article: Article | null; error?: string }>({
         type: 'EXTRACT_ARTICLE',
@@ -83,16 +89,21 @@ function App() {
         setState((prev) => ({
           ...prev,
           article: response.article,
+          isExtracting: false,
         }))
+
         logger.info('Article extracted successfully')
       } else if (response.error) {
+        setState((prev) => ({ ...prev, isExtracting: false }))
         logger.error('Article extraction failed:', response.error)
         alert('提取失败: ' + response.error)
       } else {
+        setState((prev) => ({ ...prev, isExtracting: false }))
         logger.error('No article or error in response')
         alert('提取失败: 未获取到文章内容')
       }
     } catch (error) {
+      setState((prev) => ({ ...prev, isExtracting: false }))
       logger.error('Failed to extract article:', error)
       const errorMsg = error instanceof Error ? error.message : String(error)
 
@@ -117,7 +128,7 @@ function App() {
     setState((prev) => ({ ...prev, isSyncing: true, syncProgress: 'Starting sync...' }))
 
     try {
-      const response = await runtime.sendToBackground<{ results: SyncResult[] }>({
+      const response = await runtime.sendMessage<{ results: SyncResult[] }>({
         type: 'SYNC_ARTICLE',
         article: state.article,
         platforms: selectedPlatforms,
@@ -176,6 +187,9 @@ function App() {
   }
 
   const addToHistory = async (article: Article, results: SyncResult[]) => {
+    logger.info('Adding to history, results count:', results.length)
+    logger.info('Results:', results.map(r => `${r.platform}: ${r.success}`).join(', '))
+
     const entry: SyncHistory = {
       id: Date.now().toString(),
       article,
@@ -183,8 +197,14 @@ function App() {
       timestamp: Date.now(),
     }
 
-    const updatedHistory = [entry, ...state.history].slice(0, 50) // Keep last 50
+    // Get current history from storage to avoid stale state closure issue
+    const stored = await runtime.getStorage('history')
+    const currentHistory: SyncHistory[] = stored?.history || []
+
+    const updatedHistory = [entry, ...currentHistory].slice(0, 50) // Keep last 50
     await runtime.setStorage({ history: updatedHistory })
+
+    logger.info('History saved, new count:', updatedHistory.length)
 
     setState((prev) => ({ ...prev, history: updatedHistory }))
   }
@@ -211,6 +231,7 @@ function App() {
             article={state.article}
             syncResults={state.syncResults}
             isSyncing={state.isSyncing}
+            isExtracting={state.isExtracting}
             syncProgress={state.syncProgress}
             platforms={state.platforms}
             currentUrl={state.currentUrl}

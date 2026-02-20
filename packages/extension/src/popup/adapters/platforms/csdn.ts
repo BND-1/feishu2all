@@ -3,17 +3,17 @@
  * Handles authentication, image upload, and article publishing to CSDN
  */
 
-import { CodeAdapter } from '../code-adapter'
+import { BaseAdapter } from '../base'
 import type {
   Article,
   SyncResult,
   AuthResult,
   ImageUploadResult,
   PlatformConfig,
-  Logger,
 } from '../../../types'
 import { createLogger } from '../../lib/logger'
-import runtime from '../../runtime/extension'
+import type { RuntimeInterface } from '../../runtime/extension'
+import { processHtml, csdnPreset } from '../../lib/html-processor'
 
 // CSDN Configuration
 const CSDN_CONFIG = {
@@ -59,20 +59,68 @@ interface CSDNSaveArticleResponse {
 interface CSDNImageSignatureResponse {
   code?: number
   data?: {
-    endpoint?: string
-    accessKeyId?: string
+    filePath?: string
+    host?: string
+    accessId?: string
     signature?: string
     policy?: string
-    objectKey?: string
+    callbackUrl?: string
+    callbackBody?: string
+    callbackBodyType?: string
+    customParam?: {
+      rtype?: string
+      filePath?: string
+      isAudit?: number
+      'x-image-app'?: string
+      type?: string
+      'x-image-suffix'?: string
+      username?: string
+    }
   }
 }
 
-export class CSDNAdapter extends CodeAdapter {
-  private readonly logger: Logger
+export class CSDNAdapter extends BaseAdapter {
+  private headerRuleIds: number[] = []
 
-  constructor() {
-    super(CSDN_PLATFORM_CONFIG, createLogger('CSDN'), CSDN_CONFIG.apiUrl)
-    this.logger = createLogger('CSDN')
+  constructor(runtime: RuntimeInterface) {
+    super(CSDN_PLATFORM_CONFIG, createLogger('CSDN'), CSDN_CONFIG.apiUrl, runtime)
+  }
+
+  /**
+   * Set up declarativeNetRequest rules to inject Origin/Referer headers
+   * Required for CSDN API and Huawei Cloud OBS CORS
+   */
+  private async setupHeaderRules(): Promise<void> {
+    if (this.headerRuleIds.length > 0) {
+      this.logger.debug('Header rules already set up:', this.headerRuleIds)
+      return
+    }
+
+    this.logger.info('Setting up header rules for CSDN and Huawei OBS...')
+
+    const editorHeaders = {
+      'Origin': 'https://editor.csdn.net',
+      'Referer': 'https://editor.csdn.net/',
+    }
+
+    const [r1, r2, r3] = await Promise.all([
+      this.runtime.addHeaderRule('*://bizapi.csdn.net/*', editorHeaders),
+      this.runtime.addHeaderRule('*://imgservice.csdn.net/*', editorHeaders),
+      this.runtime.addHeaderRule('*://csdn-img-blog.obs.cn-north-4.myhuaweicloud.com/*', editorHeaders),
+    ])
+
+    this.headerRuleIds = [r1, r2, r3]
+    this.logger.info('Header rules added successfully:', this.headerRuleIds)
+  }
+
+  /**
+   * Clear dynamic header rules
+   */
+  private async clearHeaderRules(): Promise<void> {
+    if (this.headerRuleIds.length === 0) return
+    await this.runtime.removeHeaderRules(this.headerRuleIds)
+    this.headerRuleIds = []
+    this.logger.debug('Header rules cleared')
   }
 
   /**
@@ -199,16 +247,6 @@ export class CSDNAdapter extends CodeAdapter {
     return btoa(binary)
   }
 
-  /**
-   * Generate UUID for nonce
-   */
-  private generateUUID(): string {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-      const r = (Math.random() * 16) | 0
-      const v = c === 'x' ? r : (r & 0x3) | 0x8
-      return v.toString(16)
-    })
-  }
 
   /**
    * Make signed API request
@@ -224,7 +262,7 @@ export class CSDNAdapter extends CodeAdapter {
     this.logger.info(`Request method: ${method}`)
 
     // Generate nonce and signature
-    const nonce = this.generateUUID()
+    const nonce = this.runtime.generateUUID()
     const contentType = method === 'POST' ? 'application/json' : ''
     const signature = await this.generateSignature(method, endpoint, contentType, nonce)
 
@@ -243,7 +281,7 @@ export class CSDNAdapter extends CodeAdapter {
 
     this.logger.debug(`Request: ${method} ${endpoint}`)
 
-    const response = await runtime.fetch(url, {
+    const response = await this.runtime.fetch(url, {
       method,
       headers,
       body: method === 'POST' ? JSON.stringify(body) : undefined,
@@ -263,48 +301,66 @@ export class CSDNAdapter extends CodeAdapter {
    * Upload image to CSDN
    */
   async uploadImage(url: string, blob: Blob): Promise<ImageUploadResult> {
+    await this.setupHeaderRules()
     try {
       this.logger.debug(`Uploading image to CSDN: ${url}`)
 
       // Step 1: Get upload signature
       this.progress('Getting upload signature...', 0)
 
+      const ext = this.getExtensionFromMimeType(blob.type)
+
       const sigResponse = await this.signedRequest<CSDNImageSignatureResponse>(
         '/resource-api/v1/image/direct/upload/signature',
         'POST',
         {
-          fileType: this.getExtensionFromMimeType(blob.type),
+          imageTemplate: '',
+          appName: 'direct_blog_markdown',
+          imageSuffix: ext,
         }
       )
 
+      this.logger.debug('Signature response:', JSON.stringify(sigResponse))
+
       if (!sigResponse.data?.signature) {
-        throw new Error('Failed to get upload signature')
+        this.logger.error('Signature response missing data:', sigResponse)
+        throw new Error(`Failed to get upload signature: ${JSON.stringify(sigResponse)}`)
       }
 
-      const { endpoint, accessKeyId, signature, policy, objectKey } = sigResponse.data
+      const { host, accessId, signature, policy, filePath, callbackUrl, callbackBody, callbackBodyType, customParam } = sigResponse.data
 
       // Step 2: Upload to Huawei Cloud OBS
       this.progress('Uploading image...', 50)
 
       const formData = new FormData()
-      formData.append('key', objectKey || '')
+      formData.append('key', filePath || '')
       formData.append('policy', policy || '')
-      formData.append('x-obs-acl', 'public-read')
-      formData.append('AccessKeyId', accessKeyId || '')
       formData.append('signature', signature)
-      formData.append('file', blob)
+      formData.append('AccessKeyId', accessId || '')
+      if (callbackUrl) formData.append('callbackUrl', callbackUrl)
+      if (callbackBody) formData.append('callbackBody', callbackBody)
+      if (callbackBodyType) formData.append('callbackBodyType', callbackBodyType)
+      if (customParam) {
+        for (const [k, v] of Object.entries(customParam)) {
+          if (v != null) formData.append(`x:${k}`, String(v))
+        }
+      }
+      formData.append('file', blob, `image.${ext}`)
 
-      const uploadResponse = await fetch(endpoint || '', {
+      const uploadResponse = await this.runtime.fetch(host || '', {
         method: 'POST',
         body: formData,
       })
 
       if (!uploadResponse.ok) {
-        throw new Error(`Image upload failed: ${uploadResponse.statusText}`)
+        const errorText = await uploadResponse.text()
+        this.logger.error('OBS upload failed:', uploadResponse.status, errorText)
+        throw new Error(`Image upload failed: ${uploadResponse.status}`)
       }
 
       const uploadResult = await uploadResponse.json()
       const imageUrl = uploadResult?.data?.imageUrl || uploadResult?.imageUrl
+        || (host && filePath ? `${host}/${filePath}` : null)
 
       if (!imageUrl) {
         throw new Error('No image URL returned')
@@ -325,6 +381,8 @@ export class CSDNAdapter extends CodeAdapter {
         success: false,
         error: error instanceof Error ? error.message : String(error),
       }
+    } finally {
+      await this.clearHeaderRules()
     }
   }
 
@@ -335,15 +393,23 @@ export class CSDNAdapter extends CodeAdapter {
     try {
       this.logger.info(`Publishing article to CSDN: ${article.title}`)
 
+      // Ensure tags exist (CSDN requires at least one tag)
+      let tags = (article.tags?.map((t) => t.trim()).filter(Boolean) || []).join(',')
+      if (!tags) {
+        // Use default tag if no tags provided
+        tags = '技术文章'
+        this.logger.warn('No tags provided, using default tag: 技术文章')
+      }
+
       // Build article payload - CSDN API format
       const payload = {
         title: article.title,
         markdowncontent: article.markdown,
-        content: article.html || '',
+        content: article.html ? processHtml(article.html, csdnPreset) : '',
         description: article.summary || this.extractPlainText(article.markdown, 200),
-        readType: 'public',
-        tags: (article.tags?.map((t) => t.trim()).filter(Boolean) || []).join(','),
-        status: 0, // 0 = draft
+        readType: 'private', // Keep as private/draft, not public
+        tags,
+        status: 0, // 0 = draft, 2 = published
         categories: '',
         type: 'original',
         originalLink: article.source?.url || '',
@@ -351,7 +417,7 @@ export class CSDNAdapter extends CodeAdapter {
         checkOriginal: false,
         source: 'pc_mdeditor',
         createdTime: Date.now(),
-        pubStatus: 'draft',
+        pubStatus: 'draft', // Explicitly set as draft
         coverType: article.cover ? 1 : 0,
         coverImages: article.cover ? [article.cover] : [],
       }

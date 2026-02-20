@@ -19,7 +19,9 @@
   "permissions": [
     "storage",
     "cookies",
-    "tabs"
+    "tabs",
+    "declarativeNetRequest",
+    "declarativeNetRequestWithHostAccess"
   ],
   "host_permissions": [
     "https://*.feishu.cn/*",
@@ -27,6 +29,7 @@
     "https://*.zhihu.com/*",
     "https://*.weibo.cn/*",
     "https://*.huaweicloud.com/*",
+    "https://*.myhuaweicloud.com/*",
     "https://*.zhimg.com/*",
     "https://zhihu-pics-upload.zhimg.com/*"
   ],
@@ -35,6 +38,13 @@
     "type": "module"
   },
   "content_scripts": [
+    {
+      "matches": ["https://*.feishu.cn/*"],
+      "js": ["src/content/interceptor.ts"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
     {
       "matches": ["https://*.feishu.cn/*"],
       "js": ["src/content/api.ts"],
@@ -48,10 +58,5 @@
       "all_frames": false
     }
   ],
-  "web_accessible_resources": [
-    {
-      "resources": ["src/popup/lib/*"],
-      "matches": ["<all_urls>"]
-    }
-  ]
+  "web_accessible_resources": []
 }

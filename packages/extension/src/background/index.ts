@@ -7,6 +7,7 @@ import type { Article, SyncResult, MessageTypes } from '../types'
 import { CSDNAdapter } from '../popup/adapters/platforms/csdn'
 import { ZhihuAdapter } from '../popup/adapters/platforms/zhihu'
 import { createLogger } from '../popup/lib/logger'
+import runtime from '../popup/runtime/extension'
 
 const logger = createLogger('Background')
 
@@ -17,8 +18,8 @@ const adapters: Map<string, InstanceType<typeof CSDNAdapter> | InstanceType<type
  * Initialize platform adapters
  */
 function initializeAdapters() {
-  adapters.set('csdn', new CSDNAdapter())
-  adapters.set('zhihu', new ZhihuAdapter())
+  adapters.set('csdn', new CSDNAdapter(runtime))
+  adapters.set('zhihu', new ZhihuAdapter(runtime))
   logger.info('Platform adapters initialized', { count: adapters.size })
 }
 
@@ -138,14 +139,21 @@ async function extractArticle(url?: string): Promise<{ article: Article | null; 
 
     // Check if content script is loaded by sending a ping message first
     try {
-      await chrome.tabs.sendMessage(tab.id, { type: 'PING' }, (response) => {
-        if (chrome.runtime.lastError) {
-          // Content script not loaded, try to inject it
-          logger.info('Content script not loaded, attempting to inject...')
+      const pingResponse = await chrome.tabs.sendMessage(tab.id, { type: 'PING' })
+      if (!pingResponse || !pingResponse.pong) {
+        logger.warn('Content script did not respond to PING')
+        return {
+          article: null,
+          error: '内容脚本未响应，请刷新页面后重试',
         }
-      })
-    } catch {
-      // Ignore ping errors
+      }
+      logger.info('Content script is ready')
+    } catch (pingError) {
+      logger.error('PING failed:', pingError)
+      return {
+        article: null,
+        error: '内容脚本未加载，请刷新页面后重试',
+      }
     }
 
     // Send extraction request to content script
@@ -212,6 +220,18 @@ function handleMessage(
       extractArticle(message.url)
         .then((result) => sendResponse(result))
         .catch((error) => sendResponse({ article: null, error: error.message }))
+      return true // Async response
+
+    case 'SCROLL_TO_TOP':
+      chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+        if (tab?.id) {
+          chrome.tabs.sendMessage(tab.id, { type: 'SCROLL_TO_TOP' })
+            .then((result) => sendResponse(result))
+            .catch((error) => sendResponse({ success: false, error: error.message }))
+        } else {
+          sendResponse({ success: false, error: 'No active tab' })
+        }
+      })
       return true // Async response
 
     case 'GET_HISTORY':

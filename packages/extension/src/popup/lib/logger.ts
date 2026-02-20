@@ -1,78 +1,40 @@
 /**
- * Logger utility for the extension
- * Provides debug, info, warn, and error logging with prefixes
+ * Simple logger utility
  */
 
 import type { Logger } from '../../types'
 
-export enum LogLevel {
-  DEBUG = 0,
-  INFO = 1,
-  WARN = 2,
-  ERROR = 3,
-}
+const isDev = typeof import.meta.env !== 'undefined' && import.meta.env?.DEV
 
-class LoggerImpl implements Logger {
-  private level: LogLevel = LogLevel.INFO
-  private prefix = '[Feishu2All]'
-
-  constructor() {
-    // Set log level based on environment
-    if (typeof import.meta.env !== 'undefined' && import.meta.env?.DEV) {
-      this.level = LogLevel.DEBUG
-    }
-  }
-
-  setLevel(level: LogLevel): void {
-    this.level = level
-  }
-
-  setPrefix(prefix: string): void {
-    this.prefix = prefix
-  }
+class SimpleLogger implements Logger {
+  constructor(private prefix = '[Feishu2All]') {}
 
   debug(message: string, ...args: any[]): void {
-    if (this.level <= LogLevel.DEBUG) {
-      console.debug(`${this.prefix} DEBUG:`, message, ...args)
-    }
+    // Always show debug logs for now (debugging image upload issues)
+    console.debug(`${this.prefix} DEBUG:`, message, ...args)
   }
 
   info(message: string, ...args: any[]): void {
-    if (this.level <= LogLevel.INFO) {
-      console.info(`${this.prefix} INFO:`, message, ...args)
-    }
+    console.info(`${this.prefix} INFO:`, message, ...args)
   }
 
   warn(message: string, ...args: any[]): void {
-    if (this.level <= LogLevel.WARN) {
-      console.warn(`${this.prefix} WARN:`, message, ...args)
-    }
+    console.warn(`${this.prefix} WARN:`, message, ...args)
   }
 
   error(message: string, ...args: any[]): void {
-    if (this.level <= LogLevel.ERROR) {
-      console.error(`${this.prefix} ERROR:`, message, ...args)
-    }
-  }
-
-  /**
-   * Create a scoped logger with a custom prefix
-   */
-  scoped(prefix: string): Logger {
-    const scoped = new LoggerImpl()
-    scoped.setLevel(this.level)
-    scoped.setPrefix(`${this.prefix}:${prefix}`)
-    return scoped
+    console.error(`${this.prefix} ERROR:`, message, ...args)
   }
 }
 
-// Singleton instance
-export const logger = new LoggerImpl()
-export default logger
+// Default logger instance
+export const logger = new SimpleLogger()
 
 /**
- * Create a scoped logger for a specific module
+ * Create a logger with custom prefix
  */
-export function createLogger(scope: string): Logger {
-  return logger.scoped(scope)
+export function createLogger(prefix: string): Logger {
+  return new SimpleLogger(`[${prefix}]`)
 }
+
+export default logger

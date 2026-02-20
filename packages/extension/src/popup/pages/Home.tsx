@@ -10,6 +10,7 @@ interface HomePageProps {
   article: Article | null
   syncResults: SyncResult[]
   isSyncing: boolean
+  isExtracting: boolean
   syncProgress: string
   platforms: PlatformConfig[]
   currentUrl: string
@@ -22,6 +23,7 @@ export default function HomePage({
   article,
   syncResults,
   isSyncing,
+  isExtracting,
   syncProgress,
   platforms,
   currentUrl,
@@ -66,9 +68,10 @@ export default function HomePage({
           {isFeishuUrl && (
             <button
               onClick={onRefresh}
-              className="text-sm text-blue-600 hover:text-blue-700 transition-colors"
+              disabled={isExtracting}
+              className="text-sm text-blue-600 hover:text-blue-700 transition-colors disabled:text-gray-400 disabled:cursor-not-allowed"
             >
-              刷新
+              重新提取
             </button>
           )}
         </div>
@@ -145,12 +148,24 @@ export default function HomePage({
               d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
             />
           </svg>
-          <p className="text-gray-600 mb-4">点击下方按钮提取文章内容</p>
+          <p className="text-gray-600 mb-4">
+            {isExtracting ? '正在提取文章内容...' : '点击下方按钮提取文章内容'}
+          </p>
           <button
             onClick={onExtract}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+            disabled={isExtracting}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center gap-2 mx-auto"
           >
-            提取文章
+            {isExtracting ? (
+              <>
+                <svg className="w-4 h-4 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                正在提取
+              </>
+            ) : (
+              '提取文章'
+            )}
           </button>
         </div>
       ) : (

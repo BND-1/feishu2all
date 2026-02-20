@@ -3,23 +3,24 @@
  * Handles authentication, image upload, and article publishing to Zhihu (Zhuanlan)
  */
 
-import { CodeAdapter } from '../code-adapter'
+import { BaseAdapter } from '../base'
 import type {
   Article,
   SyncResult,
   AuthResult,
   ImageUploadResult,
   PlatformConfig,
-  Logger,
 } from '../../../types'
 import { createLogger } from '../../lib/logger'
-import runtime from '../../runtime/extension'
+import type { RuntimeInterface } from '../../runtime/extension'
+import { processHtml, zhihuPreset } from '../../lib/html-processor'
 import md5 from 'js-md5'
 
 // Zhihu Configuration
 const ZHIHU_CONFIG = {
   baseUrl: 'https://www.zhihu.com',
   apiUrl: 'https://zhuanlan.zhihu.com/api',
+  editorUrl: 'https://zhuanlan.zhihu.com/api/articles', // Correct endpoint
   ossUrl: 'https://zhihu-pics-upload.zhimg.com',
   ossBucket: 'zhihu-pics',
 }
@@ -58,13 +59,62 @@ interface ZhihuError {
   }
 }
 
-export class ZhihuAdapter extends CodeAdapter {
-  private readonly logger: Logger
-  private xsrfToken: string = ''
+interface ZhihuImageUploadResponse {
+  src?: string
+  hash?: string
+  error?: {
+    code?: number
+    message?: string
+  }
+}
 
-  constructor() {
-    super(ZHIHU_PLATFORM_CONFIG, createLogger('Zhihu'), ZHIHU_CONFIG.baseUrl)
-    this.logger = createLogger('Zhihu')
+export class ZhihuAdapter extends BaseAdapter {
+  private xsrfToken: string = ''
+  private headerRuleIds: number[] = []
+  private headerRulesSetupPromise: Promise<void> | null = null
+
+  constructor(runtime: RuntimeInterface) {
+    super(ZHIHU_PLATFORM_CONFIG, createLogger('Zhihu'), ZHIHU_CONFIG.baseUrl, runtime)
+  }
+
+  /**
+   * Set up declarativeNetRequest rules for Zhihu API (with dedup)
+   */
+  private async setupHeaderRules(): Promise<void> {
+    // Avoid concurrent setup calls
+    if (this.headerRulesSetupPromise) {
+      return this.headerRulesSetupPromise
+    }
+    if (this.headerRuleIds.length > 0) return
+
+    this.headerRulesSetupPromise = (async () => {
+      const ruleHeaders = { 'x-requested-with': 'fetch' }
+
+      const [r1, r2, r3] = await Promise.all([
+        this.runtime.addHeaderRule('*://www.zhihu.com/api/*', ruleHeaders),
+        this.runtime.addHeaderRule('*://zhuanlan.zhihu.com/api/*', ruleHeaders),
+        this.runtime.addHeaderRule('*://api.zhihu.com/*', ruleHeaders),
+      ])
+
+      this.headerRuleIds = [r1, r2, r3]
+      this.logger.debug('Header rules added:', this.headerRuleIds)
+    })()
+
+    try {
+      await this.headerRulesSetupPromise
+    } finally {
+      this.headerRulesSetupPromise = null
+    }
+  }
+
+  /**
+   * Clear dynamic header rules
+   */
+  private async clearHeaderRules(): Promise<void> {
+    if (this.headerRuleIds.length === 0) return
+    await this.runtime.removeHeaderRules(this.headerRuleIds)
+    this.headerRuleIds = []
+    this.logger.debug('Header rules cleared')
   }
 
   /**
@@ -84,11 +134,24 @@ export class ZhihuAdapter extends CodeAdapter {
   async getCredentials(): Promise<Record<string, any>> {
     const cookies = await this.getCookieCredentials()
 
-    // Get XSRF token
-    this.xsrfToken = cookies['_xsrf'] || cookies['XSRF-TOKEN'] || ''
+    // Debug: Log all cookies to see what's available
+    this.logger.debug('Available cookies:', Object.keys(cookies).join(', '))
+
+    // Get XSRF token - try multiple possible names
+    this.xsrfToken = cookies['_xsrf'] || cookies['XSRF-TOKEN'] || cookies['xsrf'] || ''
+
+    // Also check for session cookies
+    const hasSession = cookies['z_c0'] || cookies['d_c0']
+
+    if (!this.xsrfToken && !hasSession) {
+      this.logger.error('No XSRF token or session cookies found')
+      throw new Error('Not authenticated with Zhihu. Please login to zhihu.com first.')
+    }
 
     if (!this.xsrfToken) {
-      throw new Error('Not authenticated with Zhihu. Please login first.')
+      this.logger.warn('No XSRF token found, but session cookie exists. Attempting to continue...')
+      // Some operations might work without XSRF token
+      this.xsrfToken = ''
     }
 
     return {
@@ -104,16 +167,11 @@ export class ZhihuAdapter extends CodeAdapter {
     try {
       this.logger.info('Checking Zhihu authentication...')
 
-      const credentials = await this.getCredentials()
+      const headers = await this.zhihuHeaders({ 'x-zse-93': '101_3_3.0' })
 
-      const response = await this.apiRequest<ZhihuMeResponse | ZhihuError>(
+      const response = await this.get<ZhihuMeResponse | ZhihuError>(
         `${ZHIHU_CONFIG.apiUrl}/v4/me`,
-        {
-          headers: {
-            'x-xsrftoken': credentials.xsrfToken,
-            'x-zse-93': '101_3_3.0',
-          },
-        }
+        headers
       )
 
       if ('id' in response && response.id) {
@@ -146,94 +204,67 @@ export class ZhihuAdapter extends CodeAdapter {
   }
 
   /**
-   * Make authenticated API request
+   * Build Zhihu-specific headers (Referer, Origin, XSRF token)
    */
-  protected async apiRequest<T = any>(
-    endpoint: string,
-    options: RequestInit = {}
-  ): Promise<T> {
-    const url = endpoint.startsWith('http') ? endpoint : endpoint
-
+  private async zhihuHeaders(extra?: Record<string, string>): Promise<Record<string, string>> {
     const credentials = await this.getCredentials()
-
     const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'x-xsrftoken': credentials.xsrfToken,
-      'x-zse-93': '101_3_3.0',
-      ...options.headers as Record<string, string>,
+      'Accept': 'application/json, text/plain, */*',
+      'Referer': 'https://zhuanlan.zhihu.com/',
+      'Origin': 'https://zhuanlan.zhihu.com',
+      ...extra,
     }
-
-    const response = await runtime.fetch(url, {
-      ...options,
-      headers,
-      credentials: 'include',
-    })
-
-    if (!response.ok) {
-      const errorText = await response.text()
-      try {
-        const errorJson = JSON.parse(errorText)
-        if (errorJson.error?.message) {
-          throw new Error(`Zhihu API error: ${errorJson.error.message}`)
-        }
-      } catch {
-        // ignore JSON parse errors
-      }
-      throw new Error(`Zhihu API error: ${response.status}\n${errorText}`)
+    if (credentials.xsrfToken) {
+      headers['x-xsrftoken'] = credentials.xsrfToken
     }
-
-    return response.json() as Promise<T>
+    return headers
   }
 
   /**
-   * Upload image to Zhihu OSS
+   * Upload image to Zhihu via URL fetch
+   */
+  /**
+   * Upload image to Zhihu
+   * Uses binary upload for authenticated CDN images (like Feishu)
    */
   async uploadImage(url: string, blob: Blob): Promise<ImageUploadResult> {
+    await this.setupHeaderRules()
     try {
-      this.logger.debug(`Uploading image to Zhihu: ${url}`)
+      this.logger.info(`Uploading image to Zhihu: ${url.substring(0, 80)}`)
 
-      // Get file hash
-      const buffer = await blob.arrayBuffer()
-      const hash = md5(new Uint8Array(buffer))
-      const fileKey = `${hash}.${this.getExtensionFromMimeType(blob.type)}`
-
-      // Method 1: Try URL-based upload first (simpler)
-      try {
-        const urlResult = await this.uploadImageByUrl(url, fileKey)
-        return urlResult
-      } catch (urlError) {
-        this.logger.debug('URL upload failed, trying binary upload:', urlError)
+      // If blob is provided and not empty, use binary upload
+      // This is necessary for images from authenticated CDNs (like Feishu)
+      if (blob && blob.size > 0) {
+        this.logger.info(`Using binary upload (blob size: ${blob.size})`)
+        const imageUrl = await this.uploadImageBinary(blob)
+        return {
+          url: imageUrl,
+          originalUrl: url,
+          success: true,
+        }
       }
 
-      // Method 2: Binary upload to OSS
-      this.progress('Uploading image to Zhihu OSS...', 50)
+      // Fallback to URL upload for public images
+      this.logger.info('Using URL upload (public image)')
+      const headers = await this.zhihuHeaders({ 'x-requested-with': 'fetch' })
+      const response = await this.postForm<ZhihuImageUploadResponse>(
+        `${ZHIHU_CONFIG.apiUrl}/uploaded_images`,
+        { url, source: 'article' },
+        headers
+      )
 
-      const ossUploadUrl = `${ZHIHU_CONFIG.ossUrl}/v1/${ZHIHU_CONFIG.ossBucket}/${fileKey}`
-
-      // Generate OSS signature
-      const signature = await this.generateOSSSignature('PUT', fileKey, blob.type)
-
-      const uploadResponse = await fetch(ossUploadUrl, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': blob.type,
-          'Content-MD5': hash,
-          'Authorization': signature,
-          'x-oss-object-acl': 'public-read',
-        },
-        body: blob,
-      })
-
-      if (!uploadResponse.ok) {
-        throw new Error(`OSS upload failed: ${uploadResponse.statusText}`)
+      if (response.error?.message) {
+        throw new Error(`Zhihu image upload failed: ${response.error.message}`)
       }
 
-      const imageUrl = `https://picx.zhimg.com/${fileKey}_source.png?source=1940ef5c`
+      if (!response.src) {
+        throw new Error('No image URL returned from Zhihu')
+      }
 
-      this.logger.debug(`Image uploaded successfully: ${imageUrl}`)
+      this.logger.info(`Image uploaded successfully: ${response.src}`)
 
       return {
-        url: imageUrl,
+        url: response.src,
         originalUrl: url,
         success: true,
       }
@@ -245,142 +276,198 @@ export class ZhihuAdapter extends CodeAdapter {
         success: false,
         error: error instanceof Error ? error.message : String(error),
       }
+    } finally {
+      await this.clearHeaderRules()
     }
   }
 
   /**
-   * Upload image by URL (Zhihu can fetch from URL)
+   * Upload image using binary method (for authenticated CDN images)
+   * Based on Wechatsync implementation with OSS V1 signature
    */
-  private async uploadImageByUrl(originalUrl: string, fileKey: string): Promise<ImageUploadResult> {
-    const response = await this.apiRequest<{ url?: string }>(
-      `${ZHIHU_CONFIG.apiUrl}/v1/images/upload_url`,
+  private async uploadImageBinary(blob: Blob): Promise<string> {
+    // 1. Calculate MD5 hash of the image
+    const arrayBuffer = await blob.arrayBuffer()
+    const imageHash = md5(arrayBuffer)
+
+    this.logger.debug(`Image MD5 hash: ${imageHash}, size: ${blob.size}`)
+
+    // 2. Request upload token (with zhihu headers for auth)
+    const headers = await this.zhihuHeaders()
+    const tokenResponse = await this.postJson<any>(
+      'https://api.zhihu.com/images',
       {
-        method: 'POST',
-        body: JSON.stringify({
-          url: originalUrl,
-        }),
+        image_hash: imageHash,
+        source: 'article',
+      },
+      headers
+    )
+
+    this.logger.info('Token response:', JSON.stringify(tokenResponse))
+
+    const uploadFile = tokenResponse.upload_file
+
+    if (!uploadFile) {
+      throw new Error(`Failed to get upload token from Zhihu: ${JSON.stringify(tokenResponse).substring(0, 200)}`)
+    }
+
+    // 3. Check if image already exists (no upload_token needed)
+    if (uploadFile.state === 1) {
+      this.logger.info('Image already exists on Zhihu')
+      const imgDetail = await this.waitForImageReady(uploadFile.image_id)
+      return `https://pic4.zhimg.com/${imgDetail.original_hash}`
+    }
+
+    // 4. Upload to Zhihu OSS (upload_token required)
+    const uploadToken = tokenResponse.upload_token
+    if (!uploadToken) {
+      throw new Error(`No upload token for new image: ${JSON.stringify(tokenResponse).substring(0, 200)}`)
+    }
+
+    await this.ossUpload(uploadFile.object_key, blob, uploadToken)
+
+    // 5. Return image URL
+    let objectKey = uploadFile.object_key
+    if (blob.type === 'image/gif') {
+      objectKey = objectKey + '.gif'
+    }
+
+    return `https://pic4.zhimg.com/${objectKey}`
+  }
+
+  /**
+   * Wait for image processing to complete on Zhihu
+   */
+  private async waitForImageReady(imageId: string): Promise<{ original_hash: string }> {
+    for (let i = 0; i < 10; i++) {
+      const response = await this.runtime.fetch(`https://api.zhihu.com/images/${imageId}`, {
+        credentials: 'include',
+      })
+      const data = await response.json() as { status?: string; original_hash?: string }
+
+      if (data.status === 'completed' || data.original_hash) {
+        return data as { original_hash: string }
       }
+
+      await new Promise(resolve => setTimeout(resolve, 1000))
+    }
+    throw new Error('Image processing timeout')
+  }
+
+  /**
+   * Upload to Zhihu OSS with V1 signature
+   */
+  private async ossUpload(
+    objectKey: string,
+    blob: Blob,
+    token: { access_id: string; access_key: string; access_token: string }
+  ): Promise<void> {
+    const contentType = blob.type || 'application/octet-stream'
+    const ossDate = new Date().toUTCString()
+    const ossUserAgent = 'aliyun-sdk-js/6.8.0'
+
+    // Build CanonicalizedOSSHeaders (sorted alphabetically)
+    const ossHeaders: Record<string, string> = {
+      'x-oss-date': ossDate,
+      'x-oss-security-token': token.access_token,
+      'x-oss-user-agent': ossUserAgent,
+    }
+
+    const canonicalizedOSSHeaders = Object.keys(ossHeaders)
+      .sort()
+      .map(key => `${key}:${ossHeaders[key]}`)
+      .join('\n')
+
+    const canonicalizedResource = `/zhihu-pics/${objectKey}`
+
+    // Build string to sign (OSS V1 signature)
+    const stringToSign =
+      'PUT\n' +
+      '\n' +  // Content-MD5 (empty)
+      contentType + '\n' +
+      ossDate + '\n' +
+      canonicalizedOSSHeaders + '\n' +
+      canonicalizedResource
+
+    const signature = await this.hmacSha1Base64(token.access_key, stringToSign)
+    const authorization = `OSS ${token.access_id}:${signature}`
+
+    const ossUrl = `${ZHIHU_CONFIG.ossUrl}/${objectKey}`
+    this.logger.info(`Uploading to OSS: ${ossUrl}`)
+
+    // Add header rule for OSS CORS
+    const ossRuleId = await this.runtime.addHeaderRule(
+      '*://zhihu-pics-upload.zhimg.com/*',
+      { 'Origin': 'https://zhuanlan.zhihu.com', 'Referer': 'https://zhuanlan.zhihu.com/' }
     )
 
-    if (!response.url) {
-      throw new Error('No image URL returned')
-    }
+    try {
+      const ossResponse = await this.runtime.fetch(ossUrl, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': contentType,
+          'Date': ossDate,
+          'Authorization': authorization,
+          'x-oss-date': ossDate,
+          'x-oss-security-token': token.access_token,
+          'x-oss-user-agent': ossUserAgent,
+        },
+        body: blob,
+      })
 
-    return {
-      url: response.url,
-      originalUrl,
-      success: true,
-    }
-  }
-
-  /**
-   * Generate OSS signature for image upload
-   */
-  private async generateOSSSignature(
-    method: string,
-    key: string,
-    contentType: string
-  ): Promise<string> {
-    const date = new Date().toUTCString()
-    const authString = `${method}\n\n\n${date}\nx-oss-object-acl:public-read\n/${ZHIHU_CONFIG.ossBucket}/${key}`
-
-    // Zhihu uses HMAC-SHA1 for OSS
-    const signature = await runtime.hmacSha1(authString, 'your_oss_access_key')
-
-    return `OSS ${'your_oss_access_id'}:${signature}`
-  }
-
-  /**
-   * Pre-process article for Zhihu
-   */
-  protected async preprocessArticle(article: Article): Promise<Article> {
-    let { html, markdown } = article
-
-    // Clean HTML for Zhihu
-    if (html) {
-      html = this.preprocessHtmlForZhihu(html)
-    }
-
-    // Pre-process markdown
-    markdown = this.preprocessMarkdownForZhihu(markdown)
-
-    return {
-      ...article,
-      html,
-      markdown,
-    }
-  }
-
-  /**
-   * Pre-process HTML for Zhihu's Draft.js format
-   */
-  private preprocessHtmlForZhihu(html: string): string {
-    let cleaned = this.cleanHtml(html)
-
-    // Wrap images in figure tags for Zhihu
-    cleaned = cleaned.replace(/<img([^>]+)>/g, '<figure><img$1></figure>')
-
-    // Convert code blocks to Zhihu format
-    cleaned = cleaned.replace(
-      /<pre><code class="language-(\w+)">([\s\S]*?)<\/code><\/pre>/g,
-      '<pre><code class="language-$1">$2</code></pre>'
-    )
-
-    return cleaned
-  }
-
-  /**
-   * Pre-process markdown for Zhihu
-   */
-  private preprocessMarkdownForZhihu(markdown: string): string {
-    // Ensure proper spacing
-    let processed = markdown
-
-    // Fix code blocks
-    processed = processed.replace(/```(\w+)?\n([\s\S]*?)```/g, (match, lang, code) => {
-      const language = lang || 'text'
-      return `\n\`\`\`${language}\n${code.trim()}\n\`\`\`\n`
-    })
-
-    // Fix table format
-    processed = this.fixMarkdownTables(processed)
-
-    return processed
-  }
-
-  /**
-   * Fix markdown tables for Zhihu
-   */
-  private fixMarkdownTables(markdown: string): string {
-    // Zhihu requires tables to have proper spacing
-    return markdown.replace(
-      /(\|.+\|\n\|[-|\s]+\|\n(?:\|.+\|\n?)+)/g,
-      (match) => {
-        return '\n\n' + match.trim() + '\n\n'
+      if (!ossResponse.ok) {
+        const errorText = await ossResponse.text()
+        this.logger.error(`OSS upload failed: ${ossResponse.status}`, errorText)
+        throw new Error(`OSS upload failed: ${ossResponse.status}`)
       }
+
+      this.logger.info('OSS upload successful')
+    } finally {
+      await this.runtime.removeHeaderRules([ossRuleId])
+    }
+  }
+
+  /**
+   * Calculate HMAC-SHA1 signature and return base64
+   */
+  private async hmacSha1Base64(key: string, message: string): Promise<string> {
+    const encoder = new TextEncoder()
+    const keyData = encoder.encode(key)
+    const messageData = encoder.encode(message)
+
+    const cryptoKey = await crypto.subtle.importKey(
+      'raw',
+      keyData,
+      { name: 'HMAC', hash: 'SHA-1' },
+      false,
+      ['sign']
     )
+
+    const signature = await crypto.subtle.sign('HMAC', cryptoKey, messageData)
+    return btoa(String.fromCharCode(...new Uint8Array(signature)))
   }
 
   /**
    * Publish article to Zhihu
    */
   protected async publishArticle(article: Article): Promise<SyncResult> {
+    await this.setupHeaderRules()
     try {
       this.logger.info(`Publishing article to Zhihu: ${article.title}`)
 
       // Step 1: Create draft
       this.progress('Creating draft...', 50)
 
-      const createResponse = await this.apiRequest<ZhihuDraftResponse | ZhihuError>(
+      // Zhihu requires HTML content (Draft.js editor), not markdown
+      const htmlContent = article.html
+        ? processHtml(article.html, zhihuPreset)
+        : article.markdown
+
+      const headers = await this.zhihuHeaders()
+      const createResponse = await this.postJson<ZhihuDraftResponse | ZhihuError>(
         `${ZHIHU_CONFIG.apiUrl}/articles/drafts`,
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            title: article.title,
-            content: article.markdown,
-            delta_time: Date.now(),
-          }),
-        }
+        { title: article.title, content: htmlContent, delta_time: Date.now() },
+        headers
       )
 
       if ('error' in createResponse && createResponse.error) {
@@ -398,28 +485,29 @@ export class ZhihuAdapter extends CodeAdapter {
       // Step 2: Update draft with full content
       this.progress('Updating draft content...', 80)
 
-      await this.apiRequest(
+      await this.patchJson(
         `${ZHIHU_CONFIG.apiUrl}/articles/${draftId}/draft`,
         {
-          method: 'PATCH',
-          body: JSON.stringify({
-            title: article.title,
-            content: article.markdown,
-            summary: article.summary || this.extractPlainText(article.html || '', 100),
-          }),
-        }
+          title: article.title,
+          content: htmlContent,
+          summary: article.summary || this.extractPlainText(article.markdown, 100),
+        },
+        headers
       )
 
-      const draftUrl = `https://zhuanlan.zhihu.com/p/${draftId}`
+      const isDraft = true // Currently always saves as draft
+      const articleUrl = `https://zhuanlan.zhihu.com/p/${draftId}${isDraft ? '/edit' : ''}`
 
       this.logger.info(`Draft created: ${draftId}`)
 
-      return this.createSuccessResult(String(draftId), draftUrl, true)
+      return this.createSuccessResult(String(draftId), articleUrl, isDraft)
     } catch (error) {
       this.logger.error('Failed to publish article to Zhihu:', error)
       return this.createErrorResult(
         error instanceof Error ? error.message : String(error)
       )
+    } finally {
+      await this.clearHeaderRules()
     }
   }
 }
