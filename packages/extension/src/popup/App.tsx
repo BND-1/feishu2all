@@ -207,10 +207,20 @@ function App() {
 
   const getCachedArticle = async (url: string): Promise<Article | null> => {
     try {
+      logger.info('Trying to get cached article for URL:', url)
       const stored = await runtime.getStorage('cachedArticle')
-      if (stored?.cachedArticle && stored.cachedArticle.url === url) {
-        // Return cached article if URL matches
-        return stored.cachedArticle.article
+      logger.info('Storage result:', stored)
+
+      if (stored?.cachedArticle) {
+        logger.info('Found cached article, URL:', stored.cachedArticle.url)
+        if (stored.cachedArticle.url === url) {
+          logger.info('URL matches, returning cached article')
+          return stored.cachedArticle.article
+        } else {
+          logger.info('URL does not match, cached URL:', stored.cachedArticle.url, 'current URL:', url)
+        }
+      } else {
+        logger.info('No cached article found')
       }
       return null
     } catch (error) {
@@ -221,6 +231,9 @@ function App() {
 
   const cacheArticle = async (url: string, article: Article) => {
     try {
+      logger.info('Caching article for URL:', url)
+      logger.info('Article title:', article.title)
+
       await runtime.setStorage({
         cachedArticle: {
           url,
@@ -228,7 +241,12 @@ function App() {
           timestamp: Date.now(),
         },
       })
-      logger.debug('Article cached for URL:', url)
+
+      logger.info('Article cached successfully')
+
+      // Verify the cache was saved
+      const verify = await runtime.getStorage('cachedArticle')
+      logger.info('Verification - cached URL:', verify?.cachedArticle?.url)
     } catch (error) {
       logger.error('Failed to cache article:', error)
     }
