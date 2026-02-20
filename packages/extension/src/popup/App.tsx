@@ -52,14 +52,22 @@ function App() {
         getStoredHistory(),
       ])
 
+      const currentUrl = currentTab?.url || ''
+
+      // Try to restore cached article for current URL
+      const cachedArticle = await getCachedArticle(currentUrl)
+
       setState((prev) => ({
         ...prev,
-        currentUrl: currentTab?.url || '',
+        currentUrl,
         platforms: config,
         history,
+        article: cachedArticle,
       }))
 
-      // Don't auto-extract, wait for user to click extract button
+      if (cachedArticle) {
+        logger.info('Restored cached article for current page')
+      }
     } catch (error) {
       logger.error('Failed to initialize app:', error)
     }
@@ -75,6 +83,10 @@ function App() {
 
       // Set extracting state
       setState((prev) => ({ ...prev, isExtracting: true }))
+
+      // Get current tab URL for caching
+      const currentTab = await runtime.getCurrentTab()
+      const currentUrl = currentTab?.url || state.currentUrl
 
       // Scroll to top before extraction
       await runtime.sendMessage({
@@ -95,6 +107,10 @@ function App() {
           article: response.article,
           isExtracting: false,
         }))
+
+        // Cache the extracted article
+        await cacheArticle(currentUrl, response.article)
+
         logger.info('Article extracted successfully')
       } else if (response.error) {
         setState((prev) => ({ ...prev, isExtracting: false }))
@@ -187,6 +203,35 @@ function App() {
   const getStoredHistory = async (): Promise<SyncHistory[]> => {
     const stored = await runtime.getStorage('history')
     return stored?.history || []
+  }
+
+  const getCachedArticle = async (url: string): Promise<Article | null> => {
+    try {
+      const stored = await runtime.getStorage('cachedArticle')
+      if (stored?.cachedArticle && stored.cachedArticle.url === url) {
+        // Return cached article if URL matches
+        return stored.cachedArticle.article
+      }
+      return null
+    } catch (error) {
+      logger.error('Failed to get cached article:', error)
+      return null
+    }
+  }
+
+  const cacheArticle = async (url: string, article: Article) => {
+    try {
+      await runtime.setStorage({
+        cachedArticle: {
+          url,
+          article,
+          timestamp: Date.now(),
+        },
+      })
+      logger.debug('Article cached for URL:', url)
+    } catch (error) {
+      logger.error('Failed to cache article:', error)
+    }
   }
 
   const addToHistory = async (article: Article, results: SyncResult[]) => {
